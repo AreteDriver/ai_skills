@@ -43,19 +43,30 @@ Reference the skill behavior directly:
 
 ```
 ClaudeSkills/
-├── skills/
+├── skills/                              # Persona-based skill definitions
 │   ├── senior-software-engineer/
-│   │   ├── SKILL.md           # Core skill definition
+│   │   ├── SKILL.md                     # Code review, architecture, mentoring
 │   │   └── references/
-│   │       └── coding-standards.md
+│   │       └── coding-standards.md      # Coding standards reference
 │   ├── senior-software-analyst/
-│   │   └── SKILL.md
+│   │   └── SKILL.md                     # Codebase auditing, system mapping
 │   └── mentor-linux/
-│       └── SKILL.md
+│       └── SKILL.md                     # Linux certification prep
 ├── prompts/
-│   └── development-collection.md
-└── templates/
-    └── skill-template.md
+│   └── development-collection.md        # Battle-tested prompt patterns
+├── templates/
+│   └── skill-template.md               # Template for creating new skills
+├── playbooks/                           # Multi-step workflows
+│   ├── full-feature.md                  # Requirements to merge workflow
+│   └── debug-and-fix.md                # Bug report to verified fix workflow
+├── decisions/
+│   └── templates/
+│       └── adr-template.md             # Architecture Decision Record template
+├── SKILL_DEVELOPER_PROMPT.md            # Guide for building Claude skills
+├── SKILL_TECH_SPEC.md                   # Technical spec for skill filesystem access
+├── LINUX_SKILL_DEVELOPER_PROMPT_FINAL.md # Linux-specific skill dev request
+├── eve-esi-skill.skill                  # EVE Online ESI API skill package
+└── local-dev.skill                      # Local dev automation skill package
 ```
 
 ## Prompts
@@ -67,9 +78,30 @@ The `prompts/` directory contains battle-tested prompt patterns for common workf
 - Project scaffolding
 - Universal prompt template
 
-## Creating New Skills
+## Playbooks
 
-Use `templates/skill-template.md` as a starting point. Key elements:
+The `playbooks/` directory contains multi-step workflows that chain skills together:
+
+- **full-feature** — End-to-end from requirements to merge (design, implement, test, review)
+- **debug-and-fix** — Bug report to verified fix (reproduce, diagnose, fix, verify)
+
+## Packaged Skills
+
+`.skill` files are self-contained skill packages with embedded references and scripts:
+
+- **eve-esi-skill.skill** — EVE Online ESI API integration skill
+- **local-dev.skill** — Local development automation skill
+
+## Skill Development
+
+Resources for building new skills:
+
+- `templates/skill-template.md` — Starting point for new skills
+- `SKILL_DEVELOPER_PROMPT.md` — Comprehensive guide for building Claude skills
+- `SKILL_TECH_SPEC.md` — Technical spec for skill filesystem access
+- `decisions/templates/adr-template.md` — ADR template for recording design choices
+
+### Key elements of a skill:
 
 1. **Frontmatter** - Name and description for tooling
 2. **Role definition** - Who the skill acts as
