@@ -1,0 +1,45 @@
+# ClaudeSkills — Global Settings
+# These settings configure how Claude Code interacts with this skill library.
+
+version: "1.0"
+
+defaults:
+  # Default skill context to always include
+  always_load:
+    - skills/core/coding-standards.md
+    - skills/core/security.md
+
+  # Max context budget (approximate tokens) for skill injection
+  max_skill_tokens: 4000
+
+  # Decision log auto-capture
+  decision_log:
+    enabled: true
+    directory: decisions/log
+    template: decisions/templates/adr-template.md
+
+  # Prompt variable defaults
+  prompt_defaults:
+    language: "auto-detect"
+    style: "concise"
+    test_framework: "auto-detect"
+
+# Skill categories and their load priority (lower = higher priority)
+categories:
+  core: 1
+  coding: 2
+  architecture: 3
+  testing: 4
+  devops: 5
+  communication: 6
+
+# File patterns to watch for auto-skill selection
+auto_select:
+  "*.py":        [skills/languages/python.md]
+  "*.ts":        [skills/languages/typescript.md]
+  "*.tsx":       [skills/languages/typescript.md]
+  "*.rs":        [skills/languages/rust.md]
+  "*.go":        [skills/languages/go.md]
+  "Dockerfile*": [skills/devops/docker.md]
+  "*.tf":        [skills/devops/terraform.md]
+  ".github/**":  [skills/devops/ci-cd.md]

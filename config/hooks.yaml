@@ -1,0 +1,27 @@
+# ClaudeSkills — Hook Definitions
+# Hooks that can be wired into Claude Code's hook system.
+
+hooks:
+  pre_commit:
+    description: "Validate code before committing"
+    steps:
+      - name: lint_check
+        skill: skills/core/coding-standards.md
+        action: "Review staged changes for style violations"
+      - name: security_scan
+        skill: skills/core/security.md
+        action: "Check for hardcoded secrets, injection risks"
+
+  post_task:
+    description: "After completing a task, prompt for decision logging"
+    steps:
+      - name: decision_prompt
+        condition: "task involved architectural or design choice"
+        action: "Suggest recording a decision log entry"
+
+  on_error:
+    description: "When a build/test fails, activate debugging skill"
+    steps:
+      - name: activate_debugger
+        skill: skills/coding/debugging.md
+        action: "Analyze error output and suggest fixes"
