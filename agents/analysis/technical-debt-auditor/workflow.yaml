@@ -55,7 +55,7 @@ workflow:
 
     # ── Stage 1: Static Analysis (read-only) ──
     - role: scanner
-      agent_ref: agents/scanner.md
+      agent_ref: sub-agents/scanner.md
       task: >
         Perform read-only static analysis of the repository.
         Scan for secrets, dependency vulnerabilities, test presence,
@@ -70,7 +70,7 @@ workflow:
 
     # ── Stage 2: Sandboxed Execution (Docker) ──
     - role: executor
-      agent_ref: agents/executor.md
+      agent_ref: sub-agents/executor.md
       task: >
         Build Docker container for the repo, attempt install,
         run entry point, and execute test suite. All inside sandbox.
@@ -87,7 +87,7 @@ workflow:
 
     # ── Stage 3: Analysis & Scoring ──
     - role: analyzer
-      agent_ref: agents/analyzer.md
+      agent_ref: sub-agents/analyzer.md
       task: >
         Score each category (0-10) per the scoring rubric.
         Categorize findings by severity. Apply security blocker if needed.
@@ -108,7 +108,7 @@ workflow:
 
     # ── Stage 4: Report Generation ──
     - role: reporter
-      agent_ref: agents/reporter.md
+      agent_ref: sub-agents/reporter.md
       task: >
         Generate human-readable DEBT.md from analysis results.
         Include score breakdown, findings by severity, fix recommendations.
@@ -127,7 +127,7 @@ workflow:
 
     # ── Stage 5: Portfolio Aggregation (conditional) ──
     - role: aggregator
-      agent_ref: agents/aggregator.md
+      agent_ref: sub-agents/aggregator.md
       task: >
         Synthesize all per-repo analysis files into a cross-repo
         comparison matrix. Identify systemic patterns. Generate

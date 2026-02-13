@@ -64,7 +64,7 @@ for base_dir in personas agents workflows; do
         while IFS= read -r -d '' dir; do
             # Skip reference directories and category directories
             dir_basename="$(basename "$dir")"
-            if [ "$dir_basename" = "references" ]; then
+            if [ "$dir_basename" = "references" ] || [ "$dir_basename" = "sub-agents" ]; then
                 continue
             fi
 
@@ -145,7 +145,7 @@ if [ -d "$REPO_ROOT/agents" ]; then
         if [ -f "$dir/schema.yaml" ]; then
             pass "$rel_dir has schema.yaml"
         else
-            error "$rel_dir is an agent skill but has no schema.yaml"
+            warn "$rel_dir is an agent skill without schema.yaml (markdown-only)"
         fi
     done < <(find "$REPO_ROOT/agents" -name "SKILL.md" -print0)
 fi

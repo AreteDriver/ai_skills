@@ -221,7 +221,7 @@ Generate DEBT.md in the repo root.
 technical-debt-auditor/
 ├── SKILL.md                          # This file (coordinator)
 ├── workflow.yaml                     # Gorgon pipeline definition
-├── agents/
+├── sub-agents/
 │   ├── scanner.md                    # Scanner agent instructions
 │   ├── executor.md                   # Executor agent instructions
 │   ├── analyzer.md                   # Analyzer agent instructions
