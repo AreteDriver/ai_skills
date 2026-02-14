@@ -1,0 +1,443 @@
+# document-forensics schema v2.0.0
+
+name: document-forensics
+version: "2.0.0"
+description: "Investigative methodology for analyzing document collections — provenance analysis, anomaly detection, redaction detection, and cross-document validation"
+type: agent
+category: analysis
+
+risk_level: medium
+consensus_level: majority
+trust: supervised
+parallel_safe: true
+tools: [Read, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Analyzing FOIA releases, court records, leaked documents, or any investigative document corpus"
+    - "Investigating what is suspicious, inconsistent, or hidden within documents"
+    - "Extracting and analyzing PDF/image metadata for provenance and authenticity"
+    - "Building evidentiary chains across multiple documents for a specific topic"
+    - "Performing the full investigative workflow (inventory, provenance, timeline, entities, anomalies, redactions, validation)"
+  do_not_use_when:
+    - condition: "Extracting entities from raw text"
+      instead: "NER/entity extraction"
+      reason: "This skill analyzes documents at the provenance and structure level, not the text content level"
+    - condition: "Resolving entity ambiguity"
+      instead: "entity-resolver"
+      reason: "Forensics identifies suspicious patterns, not entity identity"
+    - condition: "Mapping a codebase or software repository"
+      instead: "context-mapper"
+      reason: "This skill is designed for document corpora, not source code"
+    - condition: "Documents are known-clean internal documents with no investigative purpose"
+      instead: "Standard document processing"
+      reason: "Forensic analysis overhead is unnecessary for trusted content"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [provenance_analysis, anomaly_detection, redaction_detection, cross_document_validation]
+    description: The forensic analysis operation to perform
+
+  document_paths:
+    type: array
+    items:
+      type: string
+    required: true
+    description: Paths to documents to analyze
+    validation:
+      - "MUST contain at least one document path"
+      - "For cross_document_validation, MUST contain at least 2 documents"
+
+  corpus_stats:
+    type: object
+    required: false
+    description: Corpus-level statistics for anomaly comparison (required for anomaly_detection)
+
+  claims:
+    type: array
+    items:
+      type: object
+    required: false
+    description: Events or statements extracted from documents (required for cross_document_validation)
+
+  entities:
+    type: array
+    items:
+      type: object
+    required: false
+    description: Resolved entity list for reference matching
+
+  focus:
+    type: string
+    required: false
+    enum: [temporal, structural, content, all]
+    default: all
+    description: Anomaly focus area (for anomaly_detection)
+
+  page_range:
+    type: string
+    required: false
+    description: Specific pages to scan (e.g., "1-10") for redaction detection
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this analysis is being performed.
+      Must state which documents or batch and the investigative question being addressed.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  provenance_records:
+    type: array
+    items:
+      type: object
+    description: Per-document metadata extraction
+
+  suspicious_indicators:
+    type: array
+    items:
+      type: object
+    description: Flagged metadata anomalies with severity
+
+  corpus_metadata_summary:
+    type: object
+    description: Aggregate statistics across the batch
+
+  anomalies:
+    type: array
+    items:
+      type: object
+    description: Detected anomalies with type, severity, description, and significance
+
+  anomaly_count_by_severity:
+    type: object
+    description: High/medium/low anomaly counts
+
+  patterns:
+    type: array
+    items:
+      type: object
+    description: Cross-document anomaly patterns (e.g., clustered modifications)
+
+  redactions:
+    type: array
+    items:
+      type: object
+    description: Detected redactions with bounding boxes, page regions, and area
+
+  redaction_summary:
+    type: object
+    description: Count by document, heaviest redaction document
+
+  context_clues:
+    type: array
+    items:
+      type: string
+    description: Inferred topic from surrounding text near redactions
+
+  contradictions:
+    type: array
+    items:
+      type: object
+    description: Claims that conflict across documents with severity
+
+  corroborations:
+    type: array
+    items:
+      type: object
+    description: Claims supported by multiple documents with confidence scores
+
+  unverified:
+    type: array
+    items:
+      type: object
+    description: Claims that appear in only one document
+
+  error:
+    type: string
+    description: Error message if analysis failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: provenance_analysis
+    description: >
+      Extract and analyze metadata from documents to establish authenticity and origin.
+      Use as the first analysis step for any new document or batch.
+      Do NOT use on documents that have already been analyzed unless re-analysis is needed.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      document_paths:
+        type: array
+        required: true
+        description: "Paths to documents to analyze"
+      corpus_stats:
+        type: object
+        required: false
+        description: "Corpus-level statistics for anomaly comparison"
+    outputs:
+      provenance_records:
+        type: array
+      suspicious_indicators:
+        type: array
+      corpus_metadata_summary:
+        type: object
+    post_execution:
+      - "Verify metadata was extracted from all documents (note failures)"
+      - "Check that suspicious indicators include severity and significance explanation"
+      - "Confirm no documents were modified during extraction"
+
+  - name: anomaly_detection
+    description: >
+      Scan documents for temporal, structural, and content anomalies against
+      corpus-wide baselines. Use after provenance analysis establishes baselines.
+      Do NOT use without corpus statistics — anomalies are relative to the norm.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      corpus_stats:
+        type: object
+        required: true
+        description: "Baseline statistics for the corpus"
+      documents:
+        type: array
+        required: true
+        description: "Documents to scan for anomalies"
+      focus:
+        type: string
+        required: false
+        enum: [temporal, structural, content, all]
+        default: all
+    outputs:
+      anomalies:
+        type: array
+      anomaly_count_by_severity:
+        type: object
+      patterns:
+        type: array
+    post_execution:
+      - "Verify anomaly significance explanations are present (not just descriptions)"
+      - "Check that temporal anomalies reference the corpus baseline"
+      - "Confirm no documents were modified"
+
+  - name: redaction_detection
+    description: >
+      Detect visual redactions (blacked-out text) and white-box redactions
+      (removed text) in document images. Use on documents suspected of
+      containing hidden information.
+      Do NOT use on plain text files — only on PDFs or images.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      document_paths:
+        type: array
+        required: true
+        description: "Paths to PDF or image files"
+      page_range:
+        type: string
+        required: false
+        description: "Specific pages to scan (e.g., '1-10')"
+    outputs:
+      redactions:
+        type: array
+      redaction_summary:
+        type: object
+      context_clues:
+        type: array
+    post_execution:
+      - "Verify redaction count is plausible for the document type"
+      - "Check that context clues are based on actual surrounding text, not speculation"
+      - "Confirm heaviest-redaction document is flagged prominently"
+
+  - name: cross_document_validation
+    description: >
+      Compare claims, events, and timelines across multiple documents to find
+      contradictions and corroborations. Use as the capstone analysis after
+      provenance, timeline, entities, and anomalies are complete.
+      Do NOT use on a single document — requires at least 2 documents to cross-reference.
+    risk: medium
+    consensus: majority
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      claims:
+        type: array
+        required: true
+        description: "Events or statements extracted from documents"
+      documents:
+        type: array
+        required: true
+        description: "Source documents for cross-referencing"
+        validation:
+          - "MUST contain at least 2 documents"
+      entities:
+        type: array
+        required: false
+        description: "Resolved entity list for reference matching"
+    outputs:
+      contradictions:
+        type: array
+      corroborations:
+        type: array
+      unverified:
+        type: array
+    post_execution:
+      - "Verify contradictions cite specific documents and pages"
+      - "Check that corroboration scores reflect the number and quality of supporting sources"
+      - "Confirm unverified claims are not presented as contradictions"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Document paths exist and are readable"
+    - "For anomaly_detection, corpus_stats are provided"
+    - "For cross_document_validation, at least 2 documents are provided"
+
+  post_conditions:
+    - "Every finding has a confidence score or severity level"
+    - "No source documents were modified during analysis"
+    - "Chain of custody is maintained — every finding traces to source document, page, and line"
+
+  checkpoints:
+    - trigger: "A high-severity anomaly is detected"
+      action: "Verify it isn't a data quality issue before flagging as suspicious"
+    - trigger: "A contradiction between documents is found"
+      action: "Check for simple explanations (typo, date format, timezone) before reporting as a conflict"
+    - trigger: "Redaction detection produces zero results on documents expected to have redactions"
+      action: "Verify the detection algorithm ran correctly"
+    - trigger: "Corroboration score exceeds 0.95"
+      action: "Verify the supporting documents are truly independent, not copies of each other"
+    - trigger: "Before delivering the forensic report"
+      action: "Confirm that automated findings and human conclusions are clearly separated"
+
+  completion_checklist:
+    - "All investigative workflow steps were executed (or explicitly skipped with justification)"
+    - "Every finding has a confidence score or severity level"
+    - "High-confidence claims are supported by at least 2 independent sources"
+    - "Contradictions cite specific documents and page numbers"
+    - "Anomalies distinguish between the finding and its possible significance"
+    - "Chain of custody maintained — every finding traces back to source document, page, and line"
+    - "Synthesis step is clearly marked as requiring human judgment"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: document_unreadable
+      description: "Document cannot be opened or parsed"
+      action: skip
+      max_retries: 0
+      fallback: "Log, skip, note in report as 'unanalyzable'"
+
+    - error_class: metadata_extraction_failure
+      description: "Metadata extraction fails for a batch"
+      action: partial
+      max_retries: 0
+      fallback: "Report which documents failed, continue with others"
+
+    - error_class: low_ocr_quality
+      description: "OCR quality too low for text analysis"
+      action: report
+      max_retries: 0
+      fallback: "Note confidence limitation, analyze what's available"
+
+    - error_class: contradictory_evidence
+      description: "Cross-validation produces contradictory evidence"
+      action: report
+      max_retries: 0
+      fallback: "Report both sides, do not resolve — leave for human judgment"
+
+    - error_class: corpus_too_large
+      description: "Corpus too large for full analysis"
+      action: sample
+      max_retries: 0
+      fallback: "Sample, document sampling strategy, note limitation"
+
+    - error_class: repeated_failure
+      description: "Same document fails analysis 3 times"
+      action: stop
+      fallback: "Skip, add to exclusion list, note in report"
+
+  self_correction:
+    - "Finding reported without confidence score: add score retroactively before report delivery"
+    - "Conclusion drawn from anomaly alone: retract the conclusion, restate as a flagged anomaly requiring investigation"
+    - "Source document modified during analysis: halt, report the contamination, exclude the modified document"
+    - "Automated finding presented as human conclusion: re-label clearly as automated finding"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: provenance_records
+      type: array
+      consumers: [multi-agent-supervisor, entity-resolver]
+      description: "Per-document metadata provenance for downstream analysis"
+
+    - name: anomaly_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Detected anomalies with severity and significance"
+
+    - name: contradictions
+      type: array
+      consumers: [multi-agent-supervisor]
+      description: "Cross-document contradictions for human review"
+
+    - name: forensic_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Complete forensic analysis report covering all layers"
+
+  requires:
+    - name: context_map
+      type: object
+      provider: context-mapper
+      description: "Corpus map providing document inventory and baseline statistics"
+
+    - name: resolved_entities
+      type: array
+      provider: entity-resolver
+      description: "Canonicalized entity list for cross-document reference matching"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  methodology_only: true
+  never_fabricate_evidence: true
+  confidence_scoring_mandatory: true
+  human_in_the_loop_for_conclusions: true
+  preserve_chain_of_custody: true
+  anomaly_is_not_guilt: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [pdfplumber, PIL, cv2, dateutil, json]
+  system: [exiftool]
+  skills: [context-mapper, entity-resolver]
+  config: []

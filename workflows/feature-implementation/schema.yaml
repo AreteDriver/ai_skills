@@ -1,25 +1,61 @@
+# feature-implementation schema v2.0.0
+
 name: feature-implementation
-version: "1.0.0"
-description: End-to-end feature implementation using WHY/WHAT/HOW framework
-category: workflow
+version: "2.0.0"
+description: "End-to-end feature implementation using WHY/WHAT/HOW framework — from context mapping through PR delivery"
+type: workflow
+category: engineering
+
 risk_level: medium
 consensus_level: adaptive
+trust: supervised
+parallel_safe: false
+tools: [Read, Write, Edit, Glob, Grep, Bash]
 
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Implementing a complete feature that spans multiple files"
+    - "Work requires context mapping, design, implementation, testing, and PR delivery"
+    - "Coordinating multiple agents or personas through a structured pipeline"
+    - "Quality gates between phases are needed to catch issues early"
+  do_not_use_when:
+    - condition: "Small bug fix or single-file change"
+      instead: "Engineering persona directly"
+      reason: "The 5-phase pipeline adds overhead that exceeds the change complexity"
+    - condition: "Only need context mapping without implementation"
+      instead: "context-mapper workflow"
+      reason: "It produces reconnaissance output without the implementation phases"
+    - condition: "Only need a plan without execution"
+      instead: "strategic-planner persona"
+      reason: "It produces implementation plans without running code"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   task:
     type: string
     required: true
     description: Feature description or requirement
+
   codebase_path:
     type: string
     required: true
     description: Root path of the target codebase
+    validation:
+      - "MUST be an absolute path (starts with /)"
+      - "MUST be a valid directory"
+
   strategy:
     type: string
     required: false
     enum: [test_first, implement_first, parallel_modules]
     default: test_first
     description: Implementation strategy
+
   skip_phases:
     type: array
     items:
@@ -28,20 +64,35 @@ inputs:
     required: false
     description: Phases to skip (not recommended)
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this feature implementation is being performed.
+      Forces the orchestrator to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   status:
     type: string
     enum: [complete, blocked, failed]
     description: Workflow completion status
+
   context_map:
     type: object
     description: Phase 0 output — codebase context
+
   requirements:
     type: object
     description: Phase 1 output — WHY captured
+
   design:
     type: object
     description: Phase 2 output — WHAT defined
+
   implementation:
     type: object
     properties:
@@ -58,6 +109,7 @@ outputs:
       tests_passing:
         type: boolean
     description: Phase 3 output — HOW executed
+
   verification:
     type: object
     properties:
@@ -70,6 +122,7 @@ outputs:
       build_succeeds:
         type: boolean
     description: Phase 4 output — quality verified
+
   delivery:
     type: object
     properties:
@@ -81,6 +134,13 @@ outputs:
         type: integer
     description: Phase 5 output — PR created
 
+  error:
+    type: string
+    description: Error message if workflow failed
+
+# ─────────────────────────────────────────────
+# Phases
+# ─────────────────────────────────────────────
 phases:
   - name: context_mapping
     agent: context-mapper
@@ -103,6 +163,193 @@ phases:
     agents: [github-operations]
     required: true
 
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: context_mapping
+    description: >
+      Map codebase structure, dependencies, and conventions before implementation.
+      Use as Phase 0 of every feature implementation.
+      Do NOT skip unless codebase is already fully mapped from a recent session.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      codebase_path:
+        type: string
+        required: true
+      task:
+        type: string
+        required: true
+    outputs:
+      context_map:
+        type: object
+        description: "WHY/WHAT/HOW context map for downstream phases"
+    post_execution:
+      - "Verify context map includes all affected files with evidence"
+      - "Confirm dependency chains are traced in both directions"
+      - "Check that unknowns are surfaced before proceeding to Phase 1"
+
+  - name: requirements_capture
+    description: >
+      Capture complete requirements using WHY framework — goal, motivation, success criteria, anti-goals.
+      Use as Phase 1 to establish clear acceptance criteria before design.
+      Do NOT proceed to Phase 2 without user validation of requirements.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      task:
+        type: string
+        required: true
+      context_map:
+        type: object
+        required: true
+    outputs:
+      requirements:
+        type: object
+        description: "Validated WHY with goal, success criteria, anti-goals, acceptance tests"
+    post_execution:
+      - "Verify goal is specific enough to test against"
+      - "Confirm success criteria are measurable"
+      - "Ensure anti-goals are explicit"
+      - "Validate acceptance tests cover edge cases"
+
+  - name: design
+    description: >
+      Define architecture, file changes, interfaces, and data flow using WHAT framework.
+      Use as Phase 2 to produce a precise scope before implementation.
+      Do NOT start implementation without a validated design.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      requirements:
+        type: object
+        required: true
+      context_map:
+        type: object
+        required: true
+    outputs:
+      design:
+        type: object
+        description: "Architecture pattern, files to create/modify, interfaces, data flow"
+    post_execution:
+      - "Verify design is consistent with context map conventions"
+      - "Confirm all new interfaces are typed"
+      - "Check that data flow is traced end-to-end"
+      - "Flag any new external dependencies for justification"
+
+  - name: implementation
+    description: >
+      Execute the implementation plan step-by-step using HOW framework.
+      Use as Phase 3 with test-first strategy by default.
+      Do NOT bypass quality gates between steps.
+    risk: medium
+    consensus: adaptive
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      design:
+        type: object
+        required: true
+      context_map:
+        type: object
+        required: true
+      strategy:
+        type: string
+        required: false
+        enum: [test_first, implement_first, parallel_modules]
+        default: test_first
+    outputs:
+      files_created:
+        type: array
+        description: "New files created during implementation"
+      files_modified:
+        type: array
+        description: "Existing files modified during implementation"
+      tests_added:
+        type: integer
+      tests_passing:
+        type: boolean
+    post_execution:
+      - "Run full test suite and confirm all pass"
+      - "Run lint and type check"
+      - "Verify no regressions in existing tests"
+      - "Confirm implementation matches design from Phase 2"
+
+  - name: verification
+    description: >
+      Validate implementation against success criteria from Phase 1.
+      Use as Phase 4 with automated checks and manual review.
+      Do NOT skip — verification catches regressions before PR.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      implementation:
+        type: object
+        required: true
+      requirements:
+        type: object
+        required: true
+    outputs:
+      tests_pass:
+        type: boolean
+      lint_clean:
+        type: boolean
+      type_check:
+        type: boolean
+      build_succeeds:
+        type: boolean
+    post_execution:
+      - "Verify all acceptance criteria from Phase 1 are met"
+      - "Confirm no new security vulnerabilities"
+      - "Check that code follows project conventions from context map"
+      - "Validate performance is within acceptable bounds"
+
+  - name: delivery
+    description: >
+      Create a pull request with full WHY/WHAT/HOW documentation.
+      Use as Phase 5 — the final step after all gates pass.
+      Do NOT push directly to main — always create a PR.
+    risk: medium
+    consensus: any
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      implementation:
+        type: object
+        required: true
+      requirements:
+        type: object
+        required: true
+      verification:
+        type: object
+        required: true
+    outputs:
+      branch:
+        type: string
+        description: "Feature branch name"
+      pr_url:
+        type: string
+        description: "URL of the created pull request"
+      commits:
+        type: integer
+        description: "Number of commits in the PR"
+    post_execution:
+      - "Verify PR was created successfully with correct base branch"
+      - "Confirm PR description includes WHY/WHAT/HOW sections"
+      - "Check that all quality gate results are documented in PR"
+
+# ─────────────────────────────────────────────
+# Quality Gates
+# ─────────────────────────────────────────────
 quality_gates:
   - name: tests_pass
     after_phase: implementation
@@ -121,6 +368,154 @@ quality_gates:
     command: "npm run build"
     on_failure: block
 
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Codebase path exists and is a valid project"
+    - "Task description is specific enough to derive requirements"
+    - "Strategy is appropriate for the task complexity"
+    - "Required agents and personas are available"
+
+  post_conditions:
+    - "All 6 phases executed (0 through 5)"
+    - "Requirements validated with user before implementation"
+    - "All quality gates passed"
+    - "No partial implementations left behind"
+    - "PR created with WHY/WHAT/HOW documentation"
+
+  checkpoints:
+    - trigger: "Phase 1 requirements are ambiguous or conflicting"
+      action: "Escalate to user for clarification before proceeding"
+    - trigger: "Phase 2 design reveals unexpected complexity"
+      action: "Re-evaluate scope, consider splitting into smaller features"
+    - trigger: "Phase 3 quality gates fail"
+      action: "Fix implementation, re-run gates — do not bypass"
+    - trigger: "Phase 4 verification finds regressions"
+      action: "Stop, analyze root cause, fix before delivery"
+    - trigger: "Multiple approaches have failed in implementation"
+      action: "Stop after 3 attempts, report what was tried"
+    - trigger: "About to create the PR (final review)"
+      action: "Run completion checklist, verify all phases produced artifacts"
+
+  completion_checklist:
+    - "All 6 phases produced structured artifacts"
+    - "Requirements validated with user"
+    - "All quality gates passed"
+    - "No partial writes or incomplete implementations"
+    - "PR created with full documentation"
+    - "Branch is clean (no uncommitted changes)"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: test_failure_new
+      description: "New tests failing during implementation"
+      action: retry
+      max_retries: 3
+      fallback: "Fix implementation, re-run tests"
+
+    - error_class: test_failure_regression
+      description: "Existing tests broken by changes"
+      action: retry
+      max_retries: 1
+      fallback: "Stop, analyze root cause, report to user"
+
+    - error_class: lint_type_failure
+      description: "Lint or type check errors"
+      action: retry
+      max_retries: 3
+      fallback: "Auto-fix if possible, re-verify"
+
+    - error_class: build_failure
+      description: "Build fails after implementation"
+      action: retry
+      max_retries: 2
+      fallback: "Analyze build error, fix, re-build"
+
+    - error_class: design_conflict
+      description: "Phase 2 design contradicts Phase 0 context map"
+      action: escalate
+      max_retries: 0
+      fallback: "Escalate to user for decision"
+
+    - error_class: requirements_unclear
+      description: "Phase 1 requirements are ambiguous"
+      action: escalate
+      max_retries: 0
+      fallback: "Ask user for clarification before proceeding"
+
+    - error_class: repeated_failure
+      description: "Same error after max_retries"
+      action: stop
+      fallback: "Stop, report what was attempted and what failed"
+
+  self_correction:
+    - "If a phase was skipped: acknowledge and execute it before proceeding"
+    - "If a quality gate was bypassed: re-run the gate and block on failure"
+    - "If code was pushed directly to main: revert and create a PR instead"
+    - "If intent field was omitted: acknowledge on next turn, provide intent retroactively"
+    - "If post_execution checks were skipped: run them before proceeding to next phase"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: implementation_result
+      type: object
+      consumers: [multi-agent-supervisor, code-reviewer]
+      description: "Complete implementation output — files created/modified, test results, quality gate status"
+
+    - name: pr_url
+      type: string
+      consumers: [multi-agent-supervisor]
+      description: "URL of the created pull request for tracking and review"
+
+    - name: verification_report
+      type: object
+      consumers: [multi-agent-supervisor, code-reviewer]
+      description: "Full verification results — tests, lint, type check, build status"
+
+  requires:
+    - name: context_map
+      type: object
+      provider: context-mapper
+      description: "WHY/WHAT/HOW context map from pre-execution reconnaissance"
+
+    - name: file_operations
+      type: capability
+      provider: file-operations
+      description: "Safe filesystem operations for creating and modifying source files"
+
+    - name: process_execution
+      type: capability
+      provider: process-runner
+      description: "Test runner, linter, type checker, and build tool execution"
+
+    - name: github_operations
+      type: capability
+      provider: github-operations
+      description: "Branch creation, commit management, and PR creation"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  never_skip_phase_0: true
+  phase_1_requires_user_validation: true
+  test_first_default: true
+  quality_gates_blocking: true
+  always_create_pr: true
+  never_push_to_main: true
+  max_implementation_retries: 3
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
   personas: [software-architect, senior-software-engineer, testing-specialist, code-reviewer]
   agents: [context-mapper, file-operations, process-runner, github-operations]

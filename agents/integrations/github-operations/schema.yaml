@@ -1,49 +1,91 @@
+# github-operations schema v2.0.0
+
 name: github-operations
-version: "1.0.0"
-description: Repository management through Git CLI and GitHub API
+version: "2.0.0"
+description: "Repository management through Git CLI and GitHub API with branch protection, commit conventions, and security controls"
+type: agent
 category: integrations
+
 risk_level: medium
 consensus_level: required_for_push
+trust: supervised
+parallel_safe: false
+tools: [Bash, Read, Write, Edit]
 
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Cloning, branching, committing, or pushing to git repositories"
+    - "Creating, reviewing, or merging pull requests via GitHub"
+    - "Managing GitHub issues (creating, labeling, closing)"
+    - "Publishing Claude Code plugins or skills as GitHub repos"
+    - "Performing any operation that touches git history or remote state"
+  do_not_use_when:
+    - condition: "Making HTTP API requests to non-GitHub services"
+      instead: "api-client skill"
+      reason: "Generic API calls need flexible auth and response parsing"
+    - condition: "Running arbitrary shell commands unrelated to git"
+      instead: "process-runner skill"
+      reason: "Git-unrelated commands don't need branch protection or commit conventions"
+    - condition: "Editing file contents as part of a code change"
+      instead: "file-operations skill or Edit tool directly, then return here for the commit step"
+      reason: "File editing doesn't need git safety controls"
+    - condition: "Searching for code patterns in a repository"
+      instead: "Grep/Glob tools directly"
+      reason: "Search doesn't need git safety controls"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   operation:
     type: string
     required: true
     enum: [clone_repo, pull_repo, create_branch, commit_changes, push_branch, create_issue, create_pull_request, merge_pr]
     description: The GitHub operation to perform
+
   repository:
     type: string
     required: false
     description: "Repository in owner/repo format"
+
   branch:
     type: string
     required: false
     description: Branch name for branch operations
+
   message:
     type: string
     required: false
     description: Commit message or PR/issue title
+
   body:
     type: string
     required: false
     description: PR or issue body content
+
   files:
     type: array
     items:
       type: string
     required: false
     description: Files to stage for commit
+
   base_branch:
     type: string
     required: false
     default: main
     description: Base branch for PR or new branch
+
   labels:
     type: array
     items:
       type: string
     required: false
     description: Labels for issues or PRs
+
   reviewers:
     type: array
     items:
@@ -51,61 +93,533 @@ inputs:
     required: false
     description: Requested reviewers for PR
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this operation is being performed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   success:
     type: boolean
     description: Whether the operation completed
+
   operation:
     type: string
     description: The operation that was performed
+
   repository:
     type: string
     description: The repository that was operated on
+
   branch:
     type: string
     description: The branch involved
+
   url:
     type: string
     description: URL to the created resource (PR, issue, etc.)
+
   commit_sha:
     type: string
     description: SHA of the created commit
+
   error:
     type: string
     description: Error message if operation failed
 
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: clone_repo
+    description: >
+      Clone a repository to the local machine.
+      Use when setting up a new local copy.
+      Do NOT use if the repo already exists locally — use pull_repo to update instead.
     risk: low
     consensus: none
-  - name: pull_repo
-    risk: low
-    consensus: none
-  - name: create_branch
-    risk: low
-    consensus: none
-  - name: commit_changes
-    risk: medium
-    consensus: none
-  - name: push_branch
-    risk: high
-    consensus: majority
-  - name: create_issue
-    risk: low
-    consensus: none
-  - name: create_pull_request
-    risk: medium
-    consensus: none
-  - name: merge_pr
-    risk: high
-    consensus: majority
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repository:
+        type: string
+        required: true
+        description: "owner/repo format (e.g., 'AreteDriver/ai-skills')"
+      local_path:
+        type: string
+        required: false
+        description: Destination directory
+      branch:
+        type: string
+        required: false
+        description: "Branch to check out (default: default branch)"
+      shallow:
+        type: boolean
+        required: false
+        default: false
+        description: "Shallow clone (--depth 1)"
+      depth:
+        type: integer
+        required: false
+        description: Clone depth for shallow clones
+    outputs:
+      success:
+        type: boolean
+      local_path:
+        type: string
+      branch:
+        type: string
+    post_execution:
+      - "Verify the directory exists and contains expected files"
+      - "Check that the correct branch is checked out"
+      - "For private repos, verify auth succeeded before reporting failure as a network issue"
 
+  - name: pull_repo
+    description: >
+      Update local copy from remote.
+      Use to sync with upstream changes.
+      Do NOT use if there are uncommitted local changes — stash or commit first.
+    risk: low
+    consensus: none
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      path:
+        type: string
+        required: true
+        description: Path to local repository
+      branch:
+        type: string
+        required: false
+        description: "Branch to pull (default: current)"
+      rebase:
+        type: boolean
+        required: false
+        default: false
+        description: Use rebase instead of merge
+    outputs:
+      success:
+        type: boolean
+      conflicts:
+        type: boolean
+        description: Whether merge conflicts occurred
+      updated_files:
+        type: array
+        items:
+          type: string
+        description: List of changed files
+    post_execution:
+      - "If conflicts occurred, report them and do not auto-resolve"
+      - "Verify the working tree is clean after pull"
+
+  - name: create_branch
+    description: >
+      Create a new feature branch.
+      Use when starting new work.
+      Do NOT use if a branch with the same name already exists — check first.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      branch_name:
+        type: string
+        required: true
+        description: "Branch name (convention: type/description)"
+      base_branch:
+        type: string
+        required: false
+        default: "main"
+        description: Branch to create from
+      path:
+        type: string
+        required: true
+        description: Path to local repository
+    outputs:
+      success:
+        type: boolean
+      branch_name:
+        type: string
+      base_branch:
+        type: string
+    post_execution:
+      - "Verify the new branch is checked out"
+      - "Confirm it is based on an up-to-date version of the base branch"
+
+  - name: commit_changes
+    description: >
+      Stage and commit changes with a conventional commit message.
+      Use after making and reviewing changes.
+      Do NOT use without reviewing the diff first.
+    risk: medium
+    consensus: none
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      path:
+        type: string
+        required: true
+        description: Path to local repository
+      message:
+        type: string
+        required: true
+        description: "Commit message (conventional format: type(scope): subject)"
+      files:
+        type: array
+        items:
+          type: string
+        required: false
+        description: "Specific files to stage; if omitted, stages all changes"
+      amend:
+        type: boolean
+        required: false
+        default: false
+        description: Amend the previous commit
+    outputs:
+      success:
+        type: boolean
+      commit_hash:
+        type: string
+        description: Short hash of the commit
+      message:
+        type: string
+        description: The commit message used
+      files_changed:
+        type: integer
+        description: Number of files in the commit
+    post_execution:
+      - "Verify the commit exists in git log"
+      - "Confirm no secrets were committed (check against .gitignore patterns)"
+      - "If pre-commit hooks failed, fix the issue and create a new commit (do not amend)"
+
+  - name: push_branch
+    description: >
+      Push a branch to the remote.
+      Use after committing changes.
+      Do NOT push directly to protected branches (main, master, production).
+    risk: high
+    consensus: majority
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      path:
+        type: string
+        required: true
+        description: Path to local repository
+      branch:
+        type: string
+        required: false
+        description: "Branch to push (default: current)"
+      set_upstream:
+        type: boolean
+        required: false
+        default: true
+        description: "Set tracking with -u flag"
+      force:
+        type: boolean
+        required: false
+        default: false
+        description: "Force push (requires explicit approval)"
+        validation:
+          - "MUST NOT be true when targeting a protected branch"
+    outputs:
+      success:
+        type: boolean
+      remote_url:
+        type: string
+        description: The remote that was pushed to
+      branch:
+        type: string
+        description: The branch that was pushed
+    post_execution:
+      - "Verify push succeeded"
+      - "If force was used, confirm this was explicitly requested"
+      - "Check if the branch has a PR open — if so, notify that the PR was updated"
+
+  - name: create_issue
+    description: >
+      Open a new GitHub issue.
+      Use when tracking bugs, features, or tasks.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repository:
+        type: string
+        required: true
+        description: "owner/repo format"
+      title:
+        type: string
+        required: true
+        description: Issue title
+      body:
+        type: string
+        required: true
+        description: "Issue description (markdown)"
+      labels:
+        type: array
+        items:
+          type: string
+        required: false
+        description: Labels to apply
+      assignees:
+        type: array
+        items:
+          type: string
+        required: false
+        description: GitHub usernames to assign
+    outputs:
+      success:
+        type: boolean
+      issue_number:
+        type: integer
+      url:
+        type: string
+        description: HTML URL of the issue
+    post_execution:
+      - "Verify the issue was created by checking the returned URL"
+      - "Confirm labels were applied correctly"
+
+  - name: create_pull_request
+    description: >
+      Open a pull request for review.
+      Use after pushing a feature branch.
+      Do NOT create PRs without a description.
+    risk: medium
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repository:
+        type: string
+        required: true
+        description: "owner/repo format"
+      title:
+        type: string
+        required: true
+        description: "PR title (under 70 characters)"
+      body:
+        type: string
+        required: true
+        description: "PR description (markdown with summary and test plan)"
+      head:
+        type: string
+        required: true
+        description: Source branch
+      base:
+        type: string
+        required: false
+        default: "main"
+        description: Target branch
+      reviewers:
+        type: array
+        items:
+          type: string
+        required: false
+        description: Requested reviewers
+      labels:
+        type: array
+        items:
+          type: string
+        required: false
+        description: Labels to apply
+      draft:
+        type: boolean
+        required: false
+        default: false
+        description: Create as draft PR
+    outputs:
+      success:
+        type: boolean
+      pr_number:
+        type: integer
+      url:
+        type: string
+        description: HTML URL of the PR
+    post_execution:
+      - "Verify the PR was created"
+      - "Wait for CI checks before requesting review"
+      - "Confirm the base branch is correct"
+
+  - name: merge_pr
+    description: >
+      Merge an approved pull request.
+      Use only after all required reviews and checks have passed.
+    risk: high
+    consensus: majority
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      repository:
+        type: string
+        required: true
+        description: "owner/repo format"
+      pr_number:
+        type: integer
+        required: true
+        description: PR number to merge
+      merge_method:
+        type: string
+        required: false
+        default: "squash"
+        description: "merge, squash, or rebase"
+        enum: [merge, squash, rebase]
+      delete_branch:
+        type: boolean
+        required: false
+        default: true
+        description: Delete the head branch after merge
+    outputs:
+      success:
+        type: boolean
+      merge_commit:
+        type: string
+        description: Merge commit hash
+      branch_deleted:
+        type: boolean
+        description: Whether the branch was deleted
+    post_execution:
+      - "Verify merge succeeded"
+      - "Confirm CI passed on the merge commit"
+      - "If branch deletion failed, clean up manually"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "GITHUB_TOKEN environment variable is set with required scopes"
+    - "Git CLI is installed and configured"
+    - "Repository exists and is accessible"
+    - "Working directory is clean for operations that modify it"
+
+  post_conditions:
+    - "All outputs are populated"
+    - "No secrets or credentials were committed"
+    - "Commit messages follow conventional format"
+    - "Protected branches were not modified directly"
+
+  checkpoints:
+    - trigger: "About to push to a protected branch"
+      action: "Verify this was explicitly requested and approved"
+    - trigger: "About to force push"
+      action: "Confirm the target branch and that history rewrite is intentional"
+    - trigger: "Merge conflicts detected during pull"
+      action: "Report and wait for resolution guidance"
+    - trigger: "Pre-commit hooks fail"
+      action: "Fix the issue and create a new commit (never --no-verify)"
+    - trigger: "About to merge a PR"
+      action: "Verify required reviews and checks are passing"
+
+  completion_checklist:
+    - "No secrets or credentials were committed (check diff output)"
+    - "Commit messages follow conventional format"
+    - "Correct branch was targeted (not pushing to main directly)"
+    - "PR description includes summary and test plan"
+    - "CI checks are passing (or at least triggered)"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: authentication
+      description: "GITHUB_TOKEN invalid or missing required scopes"
+      action: report
+      max_retries: 0
+      fallback: "Check GITHUB_TOKEN, verify scopes, report to user"
+
+    - error_class: permission
+      description: "Permission denied on push or merge"
+      action: report
+      max_retries: 0
+      fallback: "Verify branch protection rules, check collaborator status"
+
+    - error_class: merge_conflict
+      description: "Merge conflicts during pull or merge"
+      action: report
+      max_retries: 0
+      fallback: "Report conflicting files, do not auto-resolve"
+
+    - error_class: pre_commit_hook
+      description: "Pre-commit hook failure"
+      action: retry
+      max_retries: 3
+      fallback: "Fix issue, create new commit (not amend)"
+
+    - error_class: remote_rejected
+      description: "Remote rejected push"
+      action: report
+      max_retries: 0
+      fallback: "Check branch protection, verify remote state"
+
+    - error_class: ci_failure
+      description: "CI checks failing on PR"
+      action: report
+      max_retries: 0
+      fallback: "Report status, do not merge"
+
+    - error_class: repeated_failure
+      description: "Same error after max retries"
+      action: stop
+      fallback: "Stop, report what was attempted and what failed"
+
+  self_correction:
+    - "Pushed to protected branch: immediately report, do not attempt to revert without user guidance"
+    - "Secret committed: flag as security incident, guide user through git filter-branch or BFG cleanup"
+    - "Commit made without diff review: review retroactively, amend if issues found (with user approval)"
+    - "Force push without approval: report immediately, help restore if needed using reflog"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: commit_result
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Commit hash, message, and files changed for orchestrated workflows"
+
+    - name: pr_url
+      type: string
+      consumers: [multi-agent-supervisor, email-compose]
+      description: "URL to created PR for notifications or downstream workflows"
+
+    - name: repo_state
+      type: object
+      consumers: [file-operations, context-mapper]
+      description: "Current branch, clean status, and remote tracking info"
+
+  requires:
+    - name: file_changes
+      type: array
+      provider: file-operations
+      description: "List of modified file paths to stage for commit"
+
+    - name: commit_message
+      type: string
+      provider: intent-author
+      description: "Conventional commit message generated from change analysis"
+
+# ─────────────────────────────────────────────
+# Protected Branches
+# ─────────────────────────────────────────────
 protected_branches:
   - main
   - master
   - production
   - release/*
 
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   require_feature_branches: true
   require_conventional_commits: true
@@ -113,6 +627,9 @@ constraints:
   no_secrets_in_commits: true
   token_rotation_days: 90
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
-  system: ["git", "gh"]
-  env: ["GITHUB_TOKEN"]
+  system: [git, gh]
+  env: [GITHUB_TOKEN]

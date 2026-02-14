@@ -1,15 +1,51 @@
-name: web-scrape
-version: "1.0.0"
-description: Fetch and parse web content with ethical scraping practices
-category: browser
-risk_level: low
-consensus_level: none
+# web-scrape schema v2.0.0
 
+name: web-scrape
+version: "2.0.0"
+description: "Fetch and parse web content with ethical scraping practices, rate limiting, and structured extraction"
+type: agent
+category: browser
+
+risk_level: low
+consensus_level: adaptive
+trust: autonomous
+parallel_safe: true
+tools: [WebFetch, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Extracting structured data from a specific known URL (tables, text, metadata)"
+    - "Converting HTML content to clean readable text for analysis"
+    - "Harvesting and categorizing links from a page"
+    - "Capturing a visual screenshot of a rendered page"
+    - "Parsing page metadata (title, description, OG tags) for indexing or preview"
+  do_not_use_when:
+    - condition: "Searching for information across the web"
+      instead: "web-search skill"
+      reason: "Search engines are designed for discovery"
+    - condition: "Fetching data from a REST API endpoint"
+      instead: "api-client skill"
+      reason: "APIs return structured data natively and require auth handling"
+    - condition: "Downloading files or binaries"
+      instead: "file-operations skill"
+      reason: "File downloads need disk space checks and integrity verification"
+    - condition: "Page requires authentication or session management"
+      instead: "Escalate to user"
+      reason: "Scraping behind auth walls requires explicit credentials and consent"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   url:
     type: string
     required: true
     description: The URL to scrape
+    validation:
+      - "MUST be a fully-qualified URL (starts with http:// or https://)"
   operation:
     type: string
     required: true
@@ -26,13 +62,24 @@ inputs:
     default: json
     description: Format for the extracted content
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this scrape is being performed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   success:
     type: boolean
     description: Whether the operation completed
   url:
     type: string
-    description: The URL that was scraped
+    description: The URL that was scraped (final URL after redirects)
   status_code:
     type: integer
     description: HTTP status code of the response
@@ -49,27 +96,336 @@ outputs:
     type: boolean
     description: Whether robots.txt allows scraping this URL
 
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: fetch_page
+    description: >
+      Retrieve HTML content from a URL.
+      Use when you need the raw HTML for further processing.
+      Do NOT use for pages larger than 10MB — they will timeout or exhaust memory.
     risk: low
-    consensus: none
-    rate_limit: "1s per domain"
-  - name: extract_text
-    risk: low
-    consensus: none
-  - name: extract_tables
-    risk: low
-    consensus: none
-  - name: extract_links
-    risk: low
-    consensus: none
-  - name: extract_metadata
-    risk: low
-    consensus: none
-  - name: screenshot
-    risk: low
-    consensus: none
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      url:
+        type: string
+        required: true
+        description: "Fully-qualified URL to fetch"
+      headers:
+        type: object
+        required: false
+        description: "Additional HTTP headers"
+      timeout:
+        type: integer
+        required: false
+        default: 30
+        description: "Request timeout in seconds"
+      follow_redirects:
+        type: boolean
+        required: false
+        default: true
+    outputs:
+      success:
+        type: boolean
+      url:
+        type: string
+        description: "Final URL after redirects"
+      status_code:
+        type: integer
+      content_type:
+        type: string
+      html:
+        type: string
+        description: "Raw HTML content"
+      fetch_time_ms:
+        type: integer
+    post_execution:
+      - "Verify status_code is 2xx"
+      - "If redirected, note the final URL"
+      - "Check content_type matches expected format before further processing"
 
+  - name: extract_text
+    description: >
+      Convert HTML to clean readable text.
+      Use when you need the article body without navigation, ads, or boilerplate.
+      Do NOT use for pages where layout structure is important — use fetch_page and parse manually instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      url:
+        type: string
+        required: true
+      selector:
+        type: string
+        required: false
+        description: "CSS selector to narrow extraction scope"
+      preserve_structure:
+        type: boolean
+        required: false
+        default: true
+        description: "Keep headings and paragraph breaks"
+    outputs:
+      text:
+        type: string
+        description: "Clean extracted text"
+      word_count:
+        type: integer
+      title:
+        type: string
+    post_execution:
+      - "Verify extracted text is meaningful (not empty or boilerplate-only)"
+      - "If text is suspiciously short, the page may require JavaScript rendering — retry with a JS-capable method"
+
+  - name: extract_tables
+    description: >
+      Parse HTML tables into structured data.
+      Use when the page contains tabular data that needs to be processed or compared.
+      Do NOT use for layout tables — only data tables with headers.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      url:
+        type: string
+        required: true
+      table_index:
+        type: integer
+        required: false
+        description: "Specific table index (0-based); omit for all tables"
+      selector:
+        type: string
+        required: false
+        description: "CSS selector to narrow to specific table"
+    outputs:
+      tables:
+        type: array
+        description: "List of tables, each as list of dictionaries keyed by header"
+      table_count:
+        type: integer
+    post_execution:
+      - "Verify headers were correctly identified"
+      - "Check for colspan/rowspan artifacts causing misaligned data"
+      - "If zero tables found, the data may be in a different HTML structure (divs, lists)"
+
+  - name: extract_links
+    description: >
+      Harvest and categorize URLs from a page.
+      Use for building sitemaps, finding related pages, or discovering API endpoints.
+      Do NOT use for pages with thousands of links — set a reasonable limit.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      url:
+        type: string
+        required: true
+      domain_filter:
+        type: string
+        required: false
+        description: "Only return links matching this domain"
+      link_type:
+        type: string
+        required: false
+        enum: [internal, external, all]
+        default: all
+      max_links:
+        type: integer
+        required: false
+        default: 200
+        description: "Safety cap on returned links"
+    outputs:
+      links:
+        type: array
+        description: "List of {url, text, type} objects with resolved absolute URLs"
+      link_count:
+        type: integer
+    post_execution:
+      - "Verify relative URLs were resolved to absolute"
+      - "Deduplicate results"
+      - "Categorize as internal/external if not already filtered"
+
+  - name: extract_metadata
+    description: >
+      Get page title, description, Open Graph tags, and other metadata.
+      Use for generating previews, indexing, or understanding page context before deeper scraping.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      url:
+        type: string
+        required: true
+    outputs:
+      title:
+        type: string
+      description:
+        type: string
+      og_tags:
+        type: object
+        description: "Open Graph metadata"
+      canonical_url:
+        type: string
+      language:
+        type: string
+    post_execution:
+      - "Verify metadata is present"
+      - "Missing OG tags are common — fall back to standard meta tags"
+
+  - name: screenshot
+    description: >
+      Capture visual page rendering as an image.
+      Use for visual verification, archival, or when page layout matters.
+      Requires a browser-capable environment.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      url:
+        type: string
+        required: true
+      width:
+        type: integer
+        required: false
+        default: 1920
+        description: "Viewport width in pixels"
+      height:
+        type: integer
+        required: false
+        default: 1080
+        description: "Viewport height in pixels"
+      full_page:
+        type: boolean
+        required: false
+        default: false
+        description: "Capture full scrollable height"
+    outputs:
+      image_path:
+        type: string
+        description: "Path to saved screenshot"
+      dimensions:
+        type: string
+        description: "Actual image dimensions"
+    post_execution:
+      - "Verify the screenshot captured meaningful content (not a blank page or error screen)"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "URL is well-formed and reachable"
+    - "robots.txt has been checked for the target URL"
+    - "Rate limit interval has elapsed since last request to this domain"
+
+  post_conditions:
+    - "Extracted data is structured and clean (no raw HTML in text output)"
+    - "Encoding was handled correctly (no mojibake in output)"
+    - "All URLs in output are absolute (no relative paths)"
+
+  checkpoints:
+    - trigger: "Page returns a non-2xx status code"
+      action: "Determine if retry, alternate URL, or escalation is appropriate"
+    - trigger: "Extracted text is empty or suspiciously short"
+      action: "Page may require JavaScript rendering — consider alternate method"
+    - trigger: "robots.txt disallows the target URL"
+      action: "Halt and report rather than proceeding"
+    - trigger: "Page size exceeds 5MB"
+      action: "Consider whether full content is needed or if selective extraction suffices"
+    - trigger: "About to scrape multiple pages in sequence"
+      action: "Verify rate limiting is in place"
+
+  completion_checklist:
+    - "robots.txt was checked before scraping"
+    - "Rate limits were respected (no faster than 1 req/sec per domain)"
+    - "Extracted data is structured and clean (no raw HTML in text output)"
+    - "Encoding was handled correctly (no mojibake in output)"
+    - "All URLs in output are absolute (no relative paths)"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: forbidden
+      description: "403 Forbidden"
+      action: stop
+      max_retries: 0
+      fallback: "Respect denial, do not retry"
+
+    - error_class: not_found
+      description: "404 Not Found"
+      action: report
+      max_retries: 0
+      fallback: "Report missing, check URL for typos"
+
+    - error_class: rate_limited
+      description: "429 Too Many Requests"
+      action: retry
+      max_retries: 3
+      fallback: "Exponential backoff"
+
+    - error_class: timeout
+      description: "Request timed out"
+      action: retry
+      max_retries: 1
+      fallback: "Retry once with longer timeout (60s)"
+
+    - error_class: encoding_error
+      description: "Character encoding mismatch"
+      action: retry
+      max_retries: 2
+      fallback: "Try alternative encodings (latin-1, cp1252)"
+
+    - error_class: javascript_required
+      description: "Page requires JavaScript rendering"
+      action: retry
+      max_retries: 1
+      fallback: "Fall back to Playwright/browser method"
+
+    - error_class: repeated_failure
+      description: "Same error after max_retries"
+      action: stop
+      fallback: "Stop, report what was attempted and failed"
+
+  self_correction:
+    - "robots.txt check skipped: halt immediately, check retroactively, note the violation"
+    - "Rate limit exceeded: pause for double the required interval before resuming"
+    - "Raw HTML returned instead of clean text: reprocess through extraction before delivering"
+    - "Personal data harvested unintentionally: discard the data, report what happened"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: page_content
+      type: string
+      consumers: [context-mapper, web-search]
+      description: "Extracted page content (text, tables, metadata) for analysis"
+
+    - name: page_links
+      type: array
+      consumers: [web-search, api-client]
+      description: "Harvested and categorized URLs from a page"
+
+  requires:
+    - name: target_urls
+      type: array
+      provider: web-search
+      description: "URLs discovered by search for deeper scraping"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   rate_limit_per_domain_ms: 1000
   cache_ttl_seconds: 86400
@@ -77,6 +433,11 @@ constraints:
   timeout_seconds: 30
   respect_robots_txt: true
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
   python: ["requests", "beautifulsoup4", "urllib"]
   optional: ["playwright", "selenium"]
+  skills: []
+  config: []

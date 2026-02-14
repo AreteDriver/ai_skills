@@ -1,0 +1,423 @@
+# context-mapper schema v2.0.0
+
+name: context-mapper
+version: "2.0.0"
+description: "Pre-execution mapping of codebases, document collections, or problem spaces. Runs BEFORE any Gorgon workflow to give all agents shared situational awareness"
+type: agent
+category: analysis
+
+risk_level: low
+consensus_level: any
+trust: autonomous
+parallel_safe: true
+tools: [Read, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Starting any Gorgon workflow that involves multiple agents operating on the same codebase or corpus"
+    - "An agent reports confusion about project structure or conventions"
+    - "Switching between projects in a multi-repo workflow and agents need fresh context"
+    - "Analyzing a document collection before forensic or analytical work begins"
+    - "A previous context map is stale (files changed since map creation)"
+  do_not_use_when:
+    - condition: "Fresh context map less than 1 hour old exists for the same project"
+      instead: "Reuse the cached map"
+      reason: "Re-scanning wastes tokens when the project hasn't changed"
+    - condition: "Task operates on a single known file with no cross-cutting concerns"
+      instead: "Read tool directly"
+      reason: "Full project mapping is overkill for single-file operations"
+    - condition: "Need to understand a specific function or class, not the whole project"
+      instead: "Grep/Read tools directly"
+      reason: "Targeted search is faster than full mapping"
+    - condition: "Project has fewer than 5 files"
+      instead: "Read the files directly"
+      reason: "Structured mapping overhead exceeds the cost of agents reading files individually"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [codebase_mapping, corpus_mapping, problem_mapping]
+    description: The type of context mapping to perform
+
+  path:
+    type: string
+    required: true
+    description: Absolute path to the repository root or document directory
+    validation:
+      - "MUST be an absolute path (starts with /)"
+      - "MUST be a readable directory"
+
+  task:
+    type: string
+    required: false
+    description: Task description (required for problem_mapping)
+
+  context_map:
+    type: object
+    required: false
+    description: Existing codebase or corpus map (required for problem_mapping)
+
+  max_files:
+    type: integer
+    required: false
+    default: 500
+    description: File scan cap for codebase mapping
+
+  max_documents:
+    type: integer
+    required: false
+    default: 1000
+    description: Document scan cap for corpus mapping
+
+  focus_areas:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Specific directories or modules to prioritize
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this mapping is being performed.
+      Must state the target and the downstream workflow or analysis goal.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  project_identity:
+    type: object
+    description: Name, language, framework, version, entry points
+
+  architecture_map:
+    type: object
+    description: Layers, structure, data flow
+
+  conventions:
+    type: object
+    description: Naming, test patterns, config style, imports, docstrings, type hints
+
+  dependencies:
+    type: object
+    description: External deps with versions and roles, internal interfaces
+
+  boundaries:
+    type: object
+    description: Do-not-modify paths, known issues, test coverage estimate
+
+  domain_vocabulary:
+    type: object
+    description: Project-specific terms and their definitions
+
+  total_documents:
+    type: integer
+    description: Count of documents found (corpus mapping)
+
+  file_types:
+    type: object
+    description: Breakdown by file extension (corpus mapping)
+
+  date_range:
+    type: object
+    description: Earliest and latest document dates (corpus mapping)
+
+  categories_detected:
+    type: object
+    description: Document type classification counts (corpus mapping)
+
+  top_entities_preview:
+    type: array
+    items:
+      type: object
+    description: Most-mentioned entities with counts (corpus mapping)
+
+  quality_flags:
+    type: object
+    description: Low quality scans, empty docs, duplicates (corpus mapping)
+
+  ocr_required_estimate:
+    type: integer
+    description: Documents needing OCR processing (corpus mapping)
+
+  affected_files:
+    type: array
+    items:
+      type: string
+    description: Files that will need modification (problem mapping)
+
+  interfaces_touched:
+    type: array
+    items:
+      type: string
+    description: APIs, schemas, or contracts that change (problem mapping)
+
+  risks:
+    type: array
+    items:
+      type: string
+    description: Potential problems with the approach (problem mapping)
+
+  suggested_approach:
+    type: string
+    description: Recommended implementation strategy (problem mapping)
+
+  estimated_scope:
+    type: string
+    description: Size and effort estimate (problem mapping)
+
+  error:
+    type: string
+    description: Error message if mapping failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: codebase_mapping
+    description: >
+      Produce a structured map of a software repository covering identity,
+      architecture, conventions, dependencies, boundaries, and vocabulary.
+      Use as Stage 0 before any multi-agent development workflow.
+      Do NOT use for document corpora — use corpus_mapping instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repo_path:
+        type: string
+        required: true
+        description: "Absolute path to the repository root"
+      max_files:
+        type: integer
+        required: false
+        default: 500
+        description: "File scan cap"
+      focus_areas:
+        type: array
+        required: false
+        description: "Specific directories or modules to prioritize"
+    outputs:
+      project_identity:
+        type: object
+      architecture_map:
+        type: object
+      conventions:
+        type: object
+      dependencies:
+        type: object
+      boundaries:
+        type: object
+      domain_vocabulary:
+        type: object
+    post_execution:
+      - "Verify all six sections are populated (or marked 'unknown')"
+      - "Confirm file count stayed within the scan cap"
+      - "Check that language detection matches actual project files"
+
+  - name: corpus_mapping
+    description: >
+      Map a document collection's composition, date range, entity preview,
+      and quality flags. Use before forensic analysis or any DOSSIER workflow.
+      Do NOT use for source code repositories — use codebase_mapping instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      corpus_path:
+        type: string
+        required: true
+        description: "Absolute path to the document directory"
+      max_documents:
+        type: integer
+        required: false
+        default: 1000
+        description: "Document scan cap"
+    outputs:
+      total_documents:
+        type: integer
+      file_types:
+        type: object
+      date_range:
+        type: object
+      categories_detected:
+        type: object
+      top_entities_preview:
+        type: array
+      quality_flags:
+        type: object
+      ocr_required_estimate:
+        type: integer
+    post_execution:
+      - "Verify document count matches filesystem reality"
+      - "Check for empty or corrupt files flagged"
+      - "Confirm date range is plausible for the stated corpus"
+
+  - name: problem_mapping
+    description: >
+      Map the problem space for a specific task against a known repository —
+      identifying affected files, interfaces, risks, and suggested approach.
+      Use when a specific task has been requested and you need to scope it before execution.
+      Do NOT use without first having a codebase map.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      task:
+        type: string
+        required: true
+        description: "Description of the task to scope"
+      context_map:
+        type: object
+        required: true
+        description: "Existing codebase or corpus map"
+      repo_path:
+        type: string
+        required: true
+        description: "Absolute path to the repository"
+    outputs:
+      affected_files:
+        type: array
+      interfaces_touched:
+        type: array
+      risks:
+        type: array
+      suggested_approach:
+        type: string
+      estimated_scope:
+        type: string
+    post_execution:
+      - "Verify affected files actually exist in the repository"
+      - "Check that risks include both technical and data integrity concerns"
+      - "Confirm the suggested approach respects the boundaries identified in the codebase map"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Target path exists and is readable"
+    - "For problem_mapping, a valid context_map is provided"
+    - "Scan cap is set to a reasonable value"
+
+  post_conditions:
+    - "All output sections are populated or marked 'unknown'"
+    - "No files were modified during mapping"
+    - "Map creation timestamp is recorded for staleness detection"
+
+  checkpoints:
+    - trigger: "File count approaches the scan cap"
+      action: "Decide whether to sample or request a higher cap"
+    - trigger: "Multiple languages detected"
+      action: "Ensure conventions are captured per language, not blended"
+    - trigger: "Project structure doesn't match any known pattern"
+      action: "Document as 'custom' with explicit description rather than forcing a category"
+    - trigger: "Corpus contains more than 10% low-quality or empty documents"
+      action: "Flag prominently for downstream agents"
+    - trigger: "Before finalizing"
+      action: "Verify the map would give a fresh agent enough context to start working immediately"
+
+  completion_checklist:
+    - "All requested mapping sections are populated"
+    - "File/document scan stayed within configured cap"
+    - "Language and framework detection matches actual project files"
+    - "Domain vocabulary includes all project-specific terms encountered"
+    - "Boundaries include known issues and do-not-modify paths"
+    - "Map timestamp is recorded for staleness detection"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: path_not_found
+      description: "Target path not found or not readable"
+      action: report
+      max_retries: 0
+      fallback: "Report immediately, cannot proceed without valid path"
+
+    - error_class: scan_cap_exceeded
+      description: "File scan exceeds configured cap"
+      action: sample
+      max_retries: 0
+      fallback: "Sample files, document sampling strategy, continue"
+
+    - error_class: detection_ambiguous
+      description: "Language or framework detection is ambiguous"
+      action: report
+      max_retries: 0
+      fallback: "List candidates with confidence, let downstream agents decide"
+
+    - error_class: corrupt_files
+      description: "Corrupt or unreadable files in corpus"
+      action: skip
+      max_retries: 0
+      fallback: "Log and skip, include in quality_flags output"
+
+    - error_class: repeated_failure
+      description: "Same mapping error after 3 retries"
+      action: stop
+      fallback: "Stop, report what was mapped and what failed"
+
+  self_correction:
+    - "Project files modified during mapping: undo immediately, re-scan to verify no changes persisted"
+    - "Scan exceeded cap without sampling: note in output, consider re-running with sampling"
+    - "Conventions assumed across languages: re-examine and split into per-language convention blocks"
+    - "Unknown sections left blank instead of marked 'unknown': add explicit 'unknown' markers before delivery"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: context_map
+      type: object
+      consumers: [multi-agent-supervisor, file-operations, document-forensics, intent-author]
+      description: "Structured project/corpus context for all downstream agents"
+
+    - name: affected_files
+      type: array
+      consumers: [file-operations, code-reviewer]
+      description: "List of files identified during problem mapping"
+
+    - name: domain_vocabulary
+      type: object
+      consumers: [entity-resolver, document-forensics]
+      description: "Project-specific terms and definitions for consistent terminology"
+
+  requires:
+    - name: file_content
+      type: string
+      provider: file-operations
+      description: "Raw file content when targeted reads are needed during mapping"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  read_only: true
+  max_file_scan: 500
+  max_document_scan: 1000
+  cache_ttl_seconds: 3600
+  language_aware: true
+  honest_about_gaps: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [pathlib, json, os]
+  system: [find, stat]
+  skills: []
+  config: []

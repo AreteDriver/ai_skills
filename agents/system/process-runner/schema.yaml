@@ -1,10 +1,43 @@
-name: process-runner
-version: "1.0.0"
-description: Execute and manage subprocesses with safety controls
-category: system
-risk_level: medium
-consensus_level: none
+# process-runner schema v2.0.0
 
+name: process-runner
+version: "2.0.0"
+description: "Execute and manage subprocesses with timeout, output capture, and safety controls"
+type: agent
+category: system
+
+risk_level: medium
+consensus_level: adaptive
+trust: supervised
+parallel_safe: true
+tools: [Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Running shell commands that need safety controls (blocklist, timeout, audit logging)"
+    - "Executing build tools, test suites, or linters where exit codes and stderr matter"
+    - "Starting long-running background processes that need PID tracking and graceful shutdown"
+    - "Running command pipelines where each step must be validated against the blocklist"
+  do_not_use_when:
+    - condition: "Reading, writing, or editing files"
+      instead: "file-operations skill"
+      reason: "File operations need backup and path protection logic, not subprocess execution"
+    - condition: "Making HTTP API requests"
+      instead: "api-client skill"
+      reason: "API clients handle auth, retry, and response parsing natively"
+    - condition: "Running git or GitHub operations"
+      instead: "github-operations skill"
+      reason: "Git workflows need branch protection and commit conventions"
+    - condition: "Simple, safe, single-step operation with no safety concerns"
+      instead: "Bash tool directly"
+      reason: "Skill overhead is unnecessary"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   operation:
     type: string
@@ -15,6 +48,8 @@ inputs:
     type: string
     required: false
     description: The shell command to execute
+    validation:
+      - "MUST NOT match any blocked_patterns entry"
   timeout:
     type: integer
     required: false
@@ -42,6 +77,17 @@ inputs:
     default: 5
     description: Seconds to wait for SIGTERM before SIGKILL
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this command is being executed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   success:
     type: boolean
@@ -74,26 +120,273 @@ outputs:
     type: string
     description: Why the command was blocked
 
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: run
+    description: >
+      Execute a command synchronously with output capture.
+      Use when the command completes in a bounded time and you need stdout/stderr.
+      Do NOT use for commands expected to run longer than the timeout — use run_background instead.
     risk: medium
-    consensus: none
-  - name: run_background
-    risk: medium
-    consensus: none
-  - name: kill_process
-    risk: medium
-    consensus: none
-  - name: is_blocked
-    risk: low
-    consensus: none
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      command:
+        type: string
+        required: true
+        description: "The shell command to execute"
+      timeout:
+        type: integer
+        required: false
+        default: 60
+        description: "Maximum execution time in seconds"
+      cwd:
+        type: string
+        required: false
+        description: "Working directory for the command"
+      env:
+        type: object
+        required: false
+        description: "Environment variables (merged with current env)"
+      shell:
+        type: boolean
+        required: false
+        default: false
+        description: "Run through shell (required for pipelines)"
+    outputs:
+      success:
+        type: boolean
+      command:
+        type: string
+      exit_code:
+        type: integer
+        description: "Process exit code (-1 for errors/timeout)"
+      stdout:
+        type: string
+      stderr:
+        type: string
+      duration_ms:
+        type: integer
+      timed_out:
+        type: boolean
+      blocked:
+        type: boolean
+      block_reason:
+        type: string
+    post_execution:
+      - "Check exit_code — non-zero indicates failure"
+      - "Examine stderr for error details"
+      - "If timed_out is true, the command may still be running as a zombie process"
+      - "If blocked is true, report the block_reason and do not attempt workarounds"
 
+  - name: run_background
+    description: >
+      Start a long-running process in the background and return its PID.
+      Use for servers, watchers, or any process expected to outlive the current task.
+      Do NOT use when you need the command's output immediately — use run instead.
+    risk: medium
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      command:
+        type: string
+        required: true
+        description: "The command to run in the background"
+      cwd:
+        type: string
+        required: false
+        description: "Working directory"
+      log_file:
+        type: string
+        required: false
+        description: "File path to redirect stdout/stderr"
+    outputs:
+      success:
+        type: boolean
+      pid:
+        type: integer
+        description: "Process ID for later management"
+      command:
+        type: string
+    post_execution:
+      - "Record the PID for later cleanup"
+      - "If log_file was specified, verify the file is being written to"
+      - "Background processes must be tracked — use kill_process for cleanup when done"
+
+  - name: kill_process
+    description: >
+      Terminate a running process by PID.
+      Sends SIGTERM first, then SIGKILL after a grace period.
+      Use to clean up background processes or terminate runaway commands.
+    risk: medium
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      pid:
+        type: integer
+        required: true
+        description: "Process ID to terminate"
+      graceful_timeout:
+        type: integer
+        required: false
+        default: 5
+        description: "Seconds to wait after SIGTERM before SIGKILL"
+    outputs:
+      success:
+        type: boolean
+        description: "Whether the process was terminated"
+    post_execution:
+      - "Verify the process is no longer running"
+      - "If success is false, the process may require elevated privileges to kill — escalate to user"
+
+  - name: is_blocked
+    description: >
+      Check if a command would be blocked by the safety filter without executing it.
+      Use for pre-validation before constructing complex command sequences.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: false
+    inputs:
+      command:
+        type: string
+        required: true
+        description: "The command to check"
+    outputs:
+      blocked:
+        type: boolean
+      block_reason:
+        type: string
+        description: "The matched pattern, if blocked"
+    post_execution:
+      - "If blocked, do not attempt to reformulate the command to bypass the filter"
+      - "Report the block reason and suggest a safe alternative"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Command has been checked against the blocklist"
+    - "Timeout is set (no unbounded execution)"
+    - "Working directory exists (if cwd is specified)"
+
+  post_conditions:
+    - "Exit code was checked and reported"
+    - "Both stdout and stderr were captured and included in output"
+    - "Background processes have their PIDs recorded for later cleanup"
+
+  checkpoints:
+    - trigger: "Command contains shell metacharacters (pipes, redirects, semicolons)"
+      action: "Verify each component against the blocklist"
+    - trigger: "Exit code is non-zero"
+      action: "Examine stderr before retrying or reporting"
+    - trigger: "Command timed out"
+      action: "Decide whether to kill the process or extend the timeout"
+    - trigger: "About to execute a command with sudo or as root"
+      action: "Verify this is explicitly required and approved"
+    - trigger: "Multiple commands are being chained"
+      action: "Validate each independently before execution"
+
+  completion_checklist:
+    - "Command was checked against the blocklist before execution"
+    - "Timeout was set (no unbounded execution)"
+    - "Exit code was checked and reported"
+    - "Both stdout and stderr were captured and included in output"
+    - "Background processes have their PIDs recorded for later cleanup"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: command_blocked
+      description: "Command matches a blocked pattern"
+      action: stop
+      max_retries: 0
+      fallback: "Report block reason, suggest alternative"
+
+    - error_class: non_zero_exit
+      description: "Command returned non-zero exit code"
+      action: report
+      max_retries: 0
+      fallback: "Examine stderr, report details"
+
+    - error_class: timeout_expired
+      description: "Command exceeded timeout"
+      action: report
+      max_retries: 0
+      fallback: "Report partial output, offer to extend timeout or kill"
+
+    - error_class: permission_denied
+      description: "Insufficient permissions to execute"
+      action: escalate
+      max_retries: 0
+      fallback: "Report, suggest running with appropriate permissions"
+
+    - error_class: command_not_found
+      description: "Command binary not found in PATH"
+      action: report
+      max_retries: 0
+      fallback: "Check PATH, suggest installation"
+
+    - error_class: process_unkillable
+      description: "Process won't terminate after SIGTERM"
+      action: retry
+      max_retries: 1
+      fallback: "Escalate from SIGTERM to SIGKILL"
+
+    - error_class: repeated_failure
+      description: "Same error after max_retries"
+      action: stop
+      fallback: "Stop, report what was attempted"
+
+  self_correction:
+    - "Blocklist check skipped: halt immediately, run the check retroactively, report the violation"
+    - "Timeout not set: terminate the process immediately if still running, apply timeout on retry"
+    - "Output not captured: re-run the command with capture enabled if safe to do so"
+    - "Background process PID not recorded: attempt to find the process by command name, log for cleanup"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: process_result
+      type: object
+      consumers: [multi-agent-supervisor, file-operations]
+      description: "Structured process result with exit code, stdout, stderr, and timing"
+
+    - name: background_pid
+      type: integer
+      consumers: [multi-agent-supervisor]
+      description: "PID of a started background process for lifecycle management"
+
+  requires:
+    - name: commands
+      type: array
+      provider: multi-agent-supervisor
+      description: "Shell commands to execute, pre-validated by the orchestrator"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   default_timeout_s: 60
   max_timeout_s: 3600
   blocked_patterns_overridable: false
   audit_logging: required
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
   python: ["subprocess", "shlex", "signal", "os"]
   system: ["bash"]
+  skills: []
+  config: []

@@ -1,0 +1,413 @@
+# release-engineer schema v2.0.0
+
+name: release-engineer
+version: "2.0.0"
+description: "Automates the last mile of shipping software — verifies release readiness, generates changelogs, tags versions, and pushes releases"
+type: agent
+category: analysis
+
+risk_level: high
+consensus_level: majority
+trust: supervised
+parallel_safe: false
+tools: [Read, Write, Edit, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Preparing a repository for public release, tagging a version, or publishing to a registry"
+    - "User says 'ship it', 'release this', 'tag a new version', or 'make this public'"
+    - "After a technical-debt-auditor run resolves critical/high items and the repo is ready to ship"
+    - "Running portfolio-wide release readiness checks across multiple repositories"
+    - "Generating changelogs from git history for a new version"
+  do_not_use_when:
+    - condition: "Auditing code quality or identifying tech debt"
+      instead: "technical-debt-auditor"
+      reason: "This skill ships code, it doesn't assess code health"
+    - condition: "Debugging a failing CI pipeline"
+      instead: "workflow-debugger"
+      reason: "This skill assumes CI passes as a precondition"
+    - condition: "Making code changes to fix issues"
+      instead: "Engineering persona or builder agent"
+      reason: "This skill documents and ships, it doesn't write application code"
+    - condition: "Repository has no tests and no CI"
+      instead: "Fix tests and CI first"
+      reason: "Releasing untested code creates a false sense of readiness"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [preflight_check, ship, portfolio_check]
+    description: The release operation to perform
+
+  repo_path:
+    type: string
+    required: true
+    description: Absolute path to the repository (or directory of repos for portfolio mode)
+    validation:
+      - "MUST be an absolute path (starts with /)"
+      - "MUST be a valid git repository (contains .git/)"
+
+  version_bump:
+    type: string
+    required: false
+    enum: [major, minor, patch]
+    description: Version bump type (required for ship operation)
+
+  publish_target:
+    type: string
+    required: false
+    enum: [pypi, npm, crates, none]
+    default: none
+    description: Registry to publish to after tagging
+
+  career_mode:
+    type: boolean
+    required: false
+    default: false
+    description: Apply career-weight modifiers for portfolio assessment
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this release is being performed.
+      Makes logs auditable and reduces hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  success:
+    type: boolean
+    description: Whether the operation completed successfully
+
+  verdict:
+    type: string
+    description: "Release readiness verdict: READY, NOT_READY, or READY_WITH_WARNINGS"
+
+  gates:
+    type: object
+    description: Pass/warn/fail status for each of the 5 preflight gates
+
+  blockers:
+    type: array
+    items:
+      type: string
+    description: Issues that must be fixed before release
+
+  warnings:
+    type: array
+    items:
+      type: string
+    description: Non-blocking issues worth addressing
+
+  new_version:
+    type: string
+    description: The version that was released (for ship operation)
+
+  tag:
+    type: string
+    description: The git tag created (for ship operation)
+
+  changelog_entry:
+    type: string
+    description: The CHANGELOG.md section generated
+
+  published:
+    type: boolean
+    description: Whether the package was published to a registry
+
+  shippable:
+    type: array
+    items:
+      type: string
+    description: Repos that pass all gates (for portfolio_check)
+
+  almost_ready:
+    type: array
+    items:
+      type: string
+    description: Repos with 1-2 fixable issues (for portfolio_check)
+
+  not_ready:
+    type: array
+    items:
+      type: string
+    description: Repos with significant gaps (for portfolio_check)
+
+  quick_wins:
+    type: array
+    items:
+      type: string
+    description: Smallest fixes that unblock the most releases (for portfolio_check)
+
+  error:
+    type: string
+    description: Error message if operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: preflight_check
+    description: >
+      Run all 5 readiness gates (code health, documentation, metadata, security, CI)
+      without modifying anything.
+      Use before any release to assess readiness.
+      Do NOT use if you just need a quick test run — run tests directly instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repo_path:
+        type: string
+        required: true
+      mode:
+        type: string
+        required: false
+        enum: [single, portfolio, career]
+        default: single
+    outputs:
+      gates:
+        type: object
+      verdict:
+        type: string
+      blockers:
+        type: array
+        items:
+          type: string
+      warnings:
+        type: array
+        items:
+          type: string
+    post_execution:
+      - "Verify all 5 gates were evaluated (code health, documentation, metadata, security, CI)"
+      - "If any gate failed, confirm the blocker list is actionable"
+      - "If verdict is READY_WITH_WARNINGS, list warnings prominently"
+
+  - name: ship
+    description: >
+      Execute the full release pipeline: version bump, changelog, commit, tag, push,
+      and optionally publish.
+      Use after preflight passes (or user overrides warnings).
+      Do NOT use without running preflight first.
+    risk: high
+    consensus: majority
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      repo_path:
+        type: string
+        required: true
+      version_bump:
+        type: string
+        required: true
+        enum: [major, minor, patch]
+      publish_target:
+        type: string
+        required: false
+        enum: [pypi, npm, crates, none]
+        default: none
+      preflight_report:
+        type: object
+        required: true
+        description: "Output from preflight_check — ship requires preflight to have passed"
+    outputs:
+      new_version:
+        type: string
+      tag:
+        type: string
+      changelog_entry:
+        type: string
+      published:
+        type: boolean
+    post_execution:
+      - "Verify the tag exists in git"
+      - "Confirm the push succeeded (both branch and tag)"
+      - "If published, verify the package is accessible on the registry"
+      - "Check that CHANGELOG.md was updated"
+      - "Verify no secrets or build artifacts were committed"
+
+  - name: portfolio_check
+    description: >
+      Run preflight across all career-relevant repositories and produce a shipping
+      status matrix.
+      Use for portfolio-wide release readiness assessment.
+      Do NOT use for a single repository — use preflight_check instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repos_path:
+        type: string
+        required: true
+        description: "Path containing multiple repositories"
+      career_mode:
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      shippable:
+        type: array
+        items:
+          type: string
+      almost_ready:
+        type: array
+        items:
+          type: string
+      not_ready:
+        type: array
+        items:
+          type: string
+      quick_wins:
+        type: array
+        items:
+          type: string
+    post_execution:
+      - "Verify all repos in the directory were evaluated"
+      - "Confirm quick wins are ordered by effort (lowest first)"
+      - "Check that career-relevant repos are weighted appropriately"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Repository is a valid git repo with at least one commit"
+    - "Working tree is clean (no uncommitted changes) for ship operation"
+    - "On main/master branch for ship operation"
+    - "Preflight passed (or user overrode warnings) before ship"
+
+  post_conditions:
+    - "All outputs are populated"
+    - "No secrets or build artifacts were committed"
+    - "CHANGELOG.md was generated for ship operation"
+    - "Git tag matches new version for ship operation"
+
+  checkpoints:
+    - trigger: "Any preflight gate fails"
+      action: "Do not proceed with ship without user acknowledgment"
+    - trigger: "About to publish to a public registry"
+      action: "Require explicit user confirmation before publishing"
+    - trigger: "Version bump type seems wrong for the changes (e.g., patch for breaking changes)"
+      action: "Confirm with user before proceeding"
+    - trigger: "Multiple config files contain version numbers"
+      action: "Verify all were updated consistently"
+    - trigger: "About to push tags to remote"
+      action: "Verify the tag name and commit are correct"
+
+  completion_checklist:
+    - "All 5 preflight gates were evaluated"
+    - "Version was bumped correctly in all relevant config files"
+    - "CHANGELOG.md was generated and prepended with the new entry"
+    - "Git tag matches the new version"
+    - "Push to remote succeeded (both branch and tag)"
+    - "If published, package is accessible on the target registry"
+    - "No secrets or build artifacts were committed"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: test_failure
+      description: "Tests fail during preflight"
+      action: report
+      max_retries: 0
+      fallback: "Report failure, block release until tests pass"
+
+    - error_class: git_push_rejected
+      description: "Git push rejected by remote"
+      action: report
+      max_retries: 0
+      fallback: "Report, suggest git pull --rebase"
+
+    - error_class: registry_auth
+      description: "Registry publish fails due to authentication"
+      action: escalate
+      max_retries: 0
+      fallback: "Report, ask user to verify credentials"
+
+    - error_class: version_exists
+      description: "Registry publish fails because version already exists"
+      action: report
+      max_retries: 0
+      fallback: "Report, suggest bumping version again"
+
+    - error_class: preflight_gate_failure
+      description: "One or more preflight gates fail"
+      action: report
+      max_retries: 0
+      fallback: "Report which gate and why, block release"
+
+    - error_class: repeated_failure
+      description: "Same error after user fix attempt"
+      action: stop
+      max_retries: 0
+      fallback: "Stop, report full diagnostic"
+
+  self_correction:
+    - "Released without running preflight: run preflight retroactively, document any issues found post-release"
+    - "Published without user confirmation: alert user immediately with package name and version"
+    - "Committed build artifacts: revert the commit, add artifacts to .gitignore, re-commit"
+    - "Tagged wrong commit: delete local tag, re-tag correct commit (do NOT force-push the tag without user approval)"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: preflight_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Release readiness assessment with gate statuses, verdict, blockers, and warnings"
+
+    - name: release_result
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Release outcome including new version, tag, changelog entry, and publish status"
+
+    - name: portfolio_status
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Portfolio-wide shipping matrix with shippable, almost-ready, and not-ready repos"
+
+  requires:
+    - name: repo_path
+      type: string
+      provider: context-mapper
+      description: "Absolute path to the target repository identified during context mapping"
+
+    - name: debt_audit
+      type: object
+      provider: technical-debt-auditor
+      description: "Technical debt assessment used to verify critical/high items are resolved before release"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  never_force_push: true
+  never_publish_without_confirmation: true
+  never_skip_tests: true
+  always_generate_changelog: true
+  respect_gitignore: true
+  idempotent_preflight: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [build, twine]
+  system: [git, gh]
+  skills: [technical-debt-auditor]
+  config: []

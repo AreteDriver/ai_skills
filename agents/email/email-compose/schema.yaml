@@ -1,97 +1,506 @@
+# email-compose schema v2.0.0
+
 name: email-compose
-version: "1.0.0"
-description: Compose and send emails with safety controls and approval workflow
+version: "2.0.0"
+description: "Compose and send emails with safety controls, draft-review-approve workflow, and SMTP delivery"
+type: agent
 category: email
+
 risk_level: high
 consensus_level: required_for_send
+trust: supervised
+parallel_safe: false
+tools: [Bash, Read, Write]
 
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Composing and sending emails programmatically through SMTP"
+    - "Generating email drafts from templates with variable substitution"
+    - "Sending notifications, reports, or alerts via email"
+    - "Managing a draft-review-approve workflow before delivery"
+  do_not_use_when:
+    - condition: "Sending a Slack message or webhook notification"
+      instead: "api-client skill"
+      reason: "Those services have REST APIs, not SMTP"
+    - condition: "Composing documentation or text content not intended for email"
+      instead: "file-operations skill"
+      reason: "Email formatting constraints are unnecessary overhead"
+    - condition: "Interacting with email via IMAP/POP3 (reading, searching inbox)"
+      instead: "Dedicated inbox skill (not yet available)"
+      reason: "This skill only composes and sends; inbox operations require a different capability"
+    - condition: "Sending to more than 100 recipients"
+      instead: "Dedicated bulk email service (SendGrid, SES)"
+      reason: "SMTP providers throttle or block bulk sends"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   operation:
     type: string
     required: true
     enum: [create_draft, review_draft, approve_draft, send_email, add_attachment, use_template]
     description: The email operation to perform
+
   to:
     type: array
     items:
       type: string
     required: false
     description: List of recipient email addresses
+
   cc:
     type: array
     items:
       type: string
     required: false
     description: List of CC recipients
+
   bcc:
     type: array
     items:
       type: string
     required: false
     description: List of BCC recipients
+
   subject:
     type: string
     required: false
     description: Email subject line
+
   body:
     type: string
     required: false
     description: Email body content
+
   draft_id:
     type: string
     required: false
     description: ID of existing draft (for review/approve/send)
+
   template_name:
     type: string
     required: false
     description: Name of template to use
+
   attachment_path:
     type: string
     required: false
     description: Path to file to attach
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this operation is being performed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   draft_id:
     type: string
     description: Unique draft identifier
+
   status:
     type: string
     enum: [drafted, reviewed, approved, sent, failed]
     description: Current status of the email
+
   to:
     type: array
     items:
       type: string
     description: Validated recipient list
+
   validation_errors:
     type: array
     items:
       type: string
     description: Any validation issues found
+
   sent_at:
     type: string
     description: ISO timestamp when email was sent
 
+  error:
+    type: string
+    description: Error message if operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: create_draft
+    description: >
+      Create an email draft saved as JSON for review.
+      Use when starting a new email.
+      Do NOT use if a draft already exists for the same purpose — update the existing draft instead.
     risk: low
     consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      to:
+        type: array
+        items:
+          type: string
+        required: true
+        description: Recipient email addresses
+      cc:
+        type: array
+        items:
+          type: string
+        required: false
+        default: []
+      bcc:
+        type: array
+        items:
+          type: string
+        required: false
+        default: []
+      subject:
+        type: string
+        required: true
+        description: Email subject line
+      body:
+        type: string
+        required: true
+        description: Email body content
+      attachments:
+        type: array
+        items:
+          type: string
+        required: false
+        default: []
+        description: File paths to attach
+      template:
+        type: string
+        required: false
+        description: Template name for variable substitution
+      template_vars:
+        type: object
+        required: false
+        description: Variables to substitute in template
+    outputs:
+      draft_id:
+        type: string
+      status:
+        type: string
+      created_at:
+        type: string
+      validation_errors:
+        type: array
+        items:
+          type: string
+    post_execution:
+      - "Verify all recipient addresses passed validation"
+      - "Check attachment file paths exist and are under the 25MB limit"
+      - "Flag any potential issues (missing subject, empty body)"
+
   - name: review_draft
+    description: >
+      Display draft content formatted for human review.
+      Use before approval to verify content, recipients, and attachments.
+      Do NOT skip this step.
     risk: low
     consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      draft_id:
+        type: string
+        required: true
+        description: ID of the draft to review
+    outputs:
+      draft:
+        type: object
+        description: Full draft content formatted for display
+      recipient_count:
+        type: integer
+        description: Total recipients (to + cc + bcc)
+      recipient_domains:
+        type: array
+        items:
+          type: string
+        description: Unique domains in recipient list
+      attachment_count:
+        type: integer
+        description: Number of attachments
+      total_attachment_size:
+        type: string
+        description: Human-readable total size
+      warnings:
+        type: array
+        items:
+          type: string
+        description: Potential issues flagged
+    post_execution:
+      - "Present the formatted draft to the user"
+      - "Highlight any warnings"
+      - "Do not proceed to approval without explicit user acknowledgment"
+
   - name: approve_draft
+    description: >
+      Mark a reviewed draft as approved for sending.
+      Use only after review_draft has been completed.
+      Requires user confirmation.
     risk: medium
     consensus: majority
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      draft_id:
+        type: string
+        required: true
+        description: ID of the draft to approve
+      user_confirmation:
+        type: boolean
+        required: true
+        description: Explicit user approval
+    outputs:
+      draft_id:
+        type: string
+      status:
+        type: string
+      approved_at:
+        type: string
+    post_execution:
+      - "Verify status changed to 'approved'"
+      - "Do not auto-proceed to send — wait for explicit send instruction"
+
   - name: send_email
+    description: >
+      Transmit an approved email via SMTP.
+      Use only after approve_draft has succeeded.
+      This is irreversible.
     risk: critical
     consensus: unanimous
-  - name: add_attachment
-    risk: low
-    consensus: none
-  - name: use_template
-    risk: low
-    consensus: none
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      draft_id:
+        type: string
+        required: true
+        description: ID of the approved draft
+      smtp_config:
+        type: string
+        required: false
+        default: "config/email.yaml"
+        description: Path to SMTP config file
+    outputs:
+      success:
+        type: boolean
+      message_id:
+        type: string
+        description: SMTP message ID
+      sent_at:
+        type: string
+        description: ISO 8601 timestamp
+      recipients_accepted:
+        type: array
+        items:
+          type: string
+        description: Addresses that accepted delivery
+      recipients_rejected:
+        type: array
+        items:
+          type: string
+        description: Addresses that were rejected
+    post_execution:
+      - "Verify success is true"
+      - "Check recipients_rejected for any bounces"
+      - "Log the message_id for tracking"
+      - "If partial delivery occurred, report which recipients failed"
 
+  - name: add_attachment
+    description: >
+      Attach a file to an existing draft.
+      Use when files need to be included with the email.
+      Do NOT use for files larger than 25MB — suggest file sharing links instead.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      draft_id:
+        type: string
+        required: true
+        description: ID of the draft
+      file_path:
+        type: string
+        required: true
+        description: Absolute path to the file to attach
+    outputs:
+      success:
+        type: boolean
+      file_name:
+        type: string
+        description: Name of attached file
+      file_size:
+        type: string
+        description: Human-readable file size
+    post_execution:
+      - "Verify file was attached successfully"
+      - "Check total attachment size is still under provider limits"
+
+  - name: use_template
+    description: >
+      Create a draft from a predefined template with variable substitution.
+      Use for recurring email types (reports, notifications, alerts).
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      template_name:
+        type: string
+        required: true
+        description: Name of the email template
+      variables:
+        type: object
+        required: true
+        description: Key-value pairs for substitution
+      to:
+        type: array
+        items:
+          type: string
+        required: true
+        description: Recipient addresses
+    outputs:
+      draft_id:
+        type: string
+      status:
+        type: string
+      unresolved_variables:
+        type: array
+        items:
+          type: string
+        description: Template variables that were not provided
+    post_execution:
+      - "Check for unresolved_variables — these will appear as raw placeholders in the email"
+      - "Review the generated draft before approval"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "SMTP credentials available via environment variables"
+    - "Draft exists and is in correct state for the requested operation"
+    - "All recipient addresses pass format validation"
+
+  post_conditions:
+    - "All outputs are populated"
+    - "No credentials appear in logs or output"
+    - "Draft state transitions are valid (drafted → reviewed → approved → sent)"
+
+  checkpoints:
+    - trigger: "About to send an email (irreversible)"
+      action: "Verify approval status and recipient list one final time"
+    - trigger: "Recipient list contains more than 10 addresses"
+      action: "Confirm this is intentional and not a mistake"
+    - trigger: "Email body contains patterns that look like credentials or secrets"
+      action: "Halt and flag for user review"
+    - trigger: "SMTP authentication fails"
+      action: "Do not retry with different credentials without user guidance"
+    - trigger: "Any recipient address is rejected"
+      action: "Report before continuing with remaining recipients"
+
+  completion_checklist:
+    - "Draft was created and reviewed before any send attempt"
+    - "All recipient addresses passed format validation"
+    - "User explicitly approved the draft before send"
+    - "SMTP connection used TLS/SSL encryption"
+    - "No credentials appear in logs or output"
+    - "Delivery status was confirmed (accepted vs rejected recipients)"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: authentication
+      description: "SMTP authentication failed"
+      action: report
+      max_retries: 0
+      fallback: "Check credentials, verify app password, report to user"
+
+    - error_class: connection
+      description: "SMTP connection error"
+      action: retry
+      max_retries: 1
+      fallback: "Verify SMTP host and port, check network"
+
+    - error_class: invalid_recipient
+      description: "Recipient address rejected by server"
+      action: report
+      max_retries: 0
+      fallback: "Remove invalid, report to user"
+
+    - error_class: attachment_too_large
+      description: "Attachment exceeds 25MB limit"
+      action: report
+      max_retries: 0
+      fallback: "Suggest compression or file sharing link"
+
+    - error_class: rate_limited
+      description: "SMTP provider rate limiting"
+      action: report
+      max_retries: 0
+      fallback: "Queue for later, respect provider limits"
+
+    - error_class: tls_failure
+      description: "TLS handshake failure"
+      action: report
+      max_retries: 0
+      fallback: "Report, do not fall back to plaintext"
+
+    - error_class: repeated_failure
+      description: "Same error after retries"
+      action: stop
+      fallback: "Stop, report what was attempted and what failed"
+
+  self_correction:
+    - "Email sent without approval: log the incident, cannot be undone — report immediately to user"
+    - "Credentials exposed in output: flag as security incident, recommend credential rotation"
+    - "Draft review skipped: halt the workflow, require review before any further action"
+    - "Sensitive data detected in body: do not send, flag for user review"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: email_delivery_status
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Delivery result including message_id, accepted/rejected recipients"
+
+    - name: draft_content
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Formatted draft for review in orchestrated workflows"
+
+  requires:
+    - name: email_content
+      type: string
+      provider: file-operations
+      description: "Email body content generated from file templates"
+
+    - name: recipient_list
+      type: array
+      provider: context-mapper
+      description: "Validated list of recipient addresses from context"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   max_attachment_size_mb: 25
   max_recipients: 100
@@ -99,6 +508,9 @@ constraints:
   require_approval_before_send: true
   require_tls: true
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
-  python: ["smtplib", "email", "imaplib"]
-  config: ["smtp_host", "smtp_port", "email_user", "email_pass"]
+  python: [smtplib, email, imaplib]
+  config: [smtp_host, smtp_port, email_user, email_pass]

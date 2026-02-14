@@ -1,0 +1,516 @@
+# technical-debt-auditor schema v2.0.0
+
+name: technical-debt-auditor
+version: "2.0.0"
+description: "Systematic technical debt assessment — scans for security issues, correctness gaps, infrastructure debt, maintainability problems, documentation quality, and dependency freshness"
+type: agent
+category: analysis
+
+risk_level: low
+consensus_level: any
+trust: autonomous
+parallel_safe: true
+tools: [Read, Write, Edit, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Auditing a repository for technical debt before making it public or presenting it"
+    - "Assessing overall project health as part of portfolio polish or pre-job-application preparation"
+    - "Comparing debt levels across multiple repositories to prioritize effort"
+    - "Tracking debt improvement over time by comparing current results against a previous DEBT.md"
+    - "Preparing a project for release (run this before release-engineer)"
+  do_not_use_when:
+    - condition: "Shipping a release"
+      instead: "release-engineer"
+      reason: "This skill assesses health, it doesn't execute releases"
+    - condition: "Debugging a specific failure"
+      instead: "workflow-debugger or a debugging persona"
+      reason: "This skill does broad assessment, not targeted diagnosis"
+    - condition: "Making code changes to fix tech debt"
+      instead: "Engineering persona"
+      reason: "This skill documents debt, it doesn't fix it"
+    - condition: "Repository is a throwaway prototype with no future"
+      instead: "Skip auditing"
+      reason: "Scoring disposable code wastes time"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [scan, execute, analyze, report, aggregate]
+    description: The audit operation to perform
+
+  repo_path:
+    type: string
+    required: true
+    description: Absolute path to the repository (or directory of repos for portfolio mode)
+    validation:
+      - "MUST be an absolute path (starts with /)"
+      - "MUST be a valid directory"
+
+  mode:
+    type: string
+    required: false
+    enum: [single, portfolio, career, diff]
+    default: single
+    description: Audit mode — single repo, portfolio sweep, career-weighted, or diff against previous
+
+  career_mode:
+    type: boolean
+    required: false
+    default: false
+    description: Apply career-weight modifiers (2x Documentation + Infrastructure for pinned/resume repos)
+
+  previous_debt_md:
+    type: string
+    required: false
+    description: Path to previous DEBT.md for diff mode comparison
+
+  docker_timeout:
+    type: integer
+    required: false
+    default: 300
+    description: Max seconds for Docker execution in execute step
+
+  docker_memory_limit:
+    type: string
+    required: false
+    default: "512m"
+    description: Container memory limit for execute step
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this audit is being performed.
+      Makes logs auditable and reduces hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  success:
+    type: boolean
+    description: Whether the operation completed successfully
+
+  scan_results:
+    type: object
+    description: Structured findings across all 6 categories
+
+  languages_detected:
+    type: array
+    items:
+      type: string
+    description: Programming languages found in the repository
+
+  framework_detected:
+    type: string
+    description: Primary framework identified
+
+  dependency_vulnerabilities:
+    type: array
+    items:
+      type: object
+    description: Known vulnerabilities in dependencies
+
+  secrets_found:
+    type: array
+    items:
+      type: string
+    description: Potential hardcoded secrets detected (immediate flag)
+
+  execution_results:
+    type: object
+    description: Install success, test results, entry point check from Docker sandbox
+
+  test_results:
+    type: object
+    description: Pass/fail/skip counts from test suite execution
+
+  category_scores:
+    type: object
+    description: "0-10 score per category (security, correctness, infrastructure, maintainability, documentation, freshness)"
+
+  overall_score:
+    type: float
+    description: Weighted average score across all categories
+
+  grade:
+    type: string
+    description: "Letter grade: A/B/C/D/F"
+
+  findings:
+    type: array
+    items:
+      type: object
+    description: All findings categorized by severity (Critical/High/Medium/Low)
+
+  recommendations:
+    type: array
+    items:
+      type: object
+    description: Fix recommendations ordered by ROI with effort estimates
+
+  diff:
+    type: object
+    description: Improvement/regression vs previous audit (diff mode only)
+
+  debt_md_path:
+    type: string
+    description: Path to the generated DEBT.md
+
+  comparison_matrix:
+    type: object
+    description: Side-by-side category scores for all repos (portfolio mode)
+
+  portfolio_health_md_path:
+    type: string
+    description: Path to PORTFOLIO-HEALTH.md (portfolio mode)
+
+  error:
+    type: string
+    description: Error message if operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: scan
+    description: >
+      Read-only static analysis of a repository: file tree discovery, language/framework
+      detection, secret scanning, TODO/FIXME counting, dependency manifest parsing,
+      vulnerability scanning, license and README checks, CI/CD detection, and git history analysis.
+      Use as the first step of every audit.
+      Do NOT use in isolation — follow with execute and analyze.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repo_path:
+        type: string
+        required: true
+      mode:
+        type: string
+        required: false
+        enum: [single, portfolio, career, diff]
+        default: single
+    outputs:
+      scan_results:
+        type: object
+      languages_detected:
+        type: array
+        items:
+          type: string
+      framework_detected:
+        type: string
+      dependency_vulnerabilities:
+        type: array
+        items:
+          type: object
+      secrets_found:
+        type: array
+        items:
+          type: string
+    post_execution:
+      - "Verify all 6 categories have scan data"
+      - "If secrets_found is non-empty, flag immediately to user before continuing"
+      - "Check that language detection matches actual file contents"
+
+  - name: execute
+    description: >
+      Sandboxed runtime verification via Docker: build, install, run entry point,
+      and run test suite.
+      Use after scan to verify the repo actually works.
+      Do NOT use without Docker available — the sandbox is mandatory for untrusted code.
+    risk: medium
+    consensus: any
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      repo_path:
+        type: string
+        required: true
+      scan_results:
+        type: object
+        required: true
+        description: "Output from scan step"
+      docker_timeout:
+        type: integer
+        required: false
+        default: 300
+      docker_memory_limit:
+        type: string
+        required: false
+        default: "512m"
+    outputs:
+      execution_results:
+        type: object
+      exit_codes:
+        type: object
+      test_results:
+        type: object
+      install_duration:
+        type: float
+    post_execution:
+      - "If execution fails, report failure and continue — never block the pipeline"
+      - "Verify Docker container was cleaned up"
+      - "Check that test results are captured even if some tests fail"
+
+  - name: analyze
+    description: >
+      Score and categorize all findings from scan and execution into the 6 categories
+      (0-10 each).
+      Use after scan and execute to produce the scored assessment.
+      Do NOT use without scan results — analysis requires scan data.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      scan_results:
+        type: object
+        required: true
+      execution_results:
+        type: object
+        required: false
+        description: "May be absent if Docker unavailable"
+      career_mode:
+        type: boolean
+        required: false
+        default: false
+      previous_debt_md:
+        type: string
+        required: false
+    outputs:
+      category_scores:
+        type: object
+      overall_score:
+        type: float
+      grade:
+        type: string
+      findings:
+        type: array
+        items:
+          type: object
+      recommendations:
+        type: array
+        items:
+          type: object
+      diff:
+        type: object
+    post_execution:
+      - "Verify the security blocker rule was applied (critical security finding caps score at 3.0)"
+      - "Check that all 6 categories have scores"
+      - "Confirm recommendations are ordered by ROI"
+
+  - name: report
+    description: >
+      Generate the human-readable DEBT.md from analysis results.
+      Use after analyze to produce the final deliverable.
+      Do NOT use without analysis data.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      analysis:
+        type: object
+        required: true
+        description: "Output from analyze step"
+      repo_path:
+        type: string
+        required: true
+        description: "Where to write DEBT.md"
+      include_diff:
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      debt_md_path:
+        type: string
+      summary:
+        type: string
+    post_execution:
+      - "Verify DEBT.md was written to the repo root"
+      - "Check that the report includes all 6 category scores"
+      - "Confirm recommendations include effort estimates"
+
+  - name: aggregate
+    description: >
+      Portfolio-wide synthesis across multiple repository audits.
+      Use after all repos have been individually audited in portfolio or career mode.
+      Do NOT use for single-repo audits.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      repo_analyses:
+        type: array
+        required: true
+        description: "Analysis outputs from all audited repos"
+      career_mode:
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      comparison_matrix:
+        type: object
+      ranked_repos:
+        type: array
+        items:
+          type: string
+      cross_repo_patterns:
+        type: array
+        items:
+          type: string
+      portfolio_health_md_path:
+        type: string
+    post_execution:
+      - "Verify all repos in the portfolio were included"
+      - "Check that cross-repo patterns cite specific repos"
+      - "Confirm career-critical repos are highlighted if career_mode is true"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Repository path exists and is a valid directory"
+    - "Docker is available for execute step (or execute is skipped)"
+    - "Scan results exist before analyze or report"
+
+  post_conditions:
+    - "All 6 scan categories have scores (0-10)"
+    - "Security blocker rule was applied if critical findings exist"
+    - "DEBT.md was written to repo root (not committed)"
+    - "Recommendations are ordered by ROI with effort estimates"
+
+  checkpoints:
+    - trigger: "Secrets detected during scan"
+      action: "Flag to user immediately, do not continue silently"
+    - trigger: "Executor fails (Docker unavailable or tests crash)"
+      action: "Decide whether to continue with scan-only data or report incomplete"
+    - trigger: "A category scores 0"
+      action: "Verify the scan data is correct, not a scanning failure"
+    - trigger: "Overall score changes by more than 2 points from previous audit"
+      action: "Investigate what caused the significant shift"
+    - trigger: "Before writing DEBT.md"
+      action: "Verify all findings are substantiated by scan/execution data"
+
+  completion_checklist:
+    - "All 6 scan categories have scores (0-10)"
+    - "Security blocker rule was applied if critical findings exist"
+    - "DEBT.md was written to the repo root (not committed)"
+    - "Recommendations are ordered by ROI with effort estimates"
+    - "If secrets were found, user was explicitly warned"
+    - "If diff mode, improvement/regression is clearly shown"
+    - "If portfolio mode, PORTFOLIO-HEALTH.md covers all repos"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: docker_unavailable
+      description: "Docker not installed or not running"
+      action: report
+      max_retries: 0
+      fallback: "Skip executor, note limitation in report, continue with scan-only"
+
+    - error_class: vuln_scan_failure
+      description: "Dependency vulnerability scan tool fails"
+      action: report
+      max_retries: 0
+      fallback: "Note limitation, score category conservatively"
+
+    - error_class: secrets_detected
+      description: "Hardcoded secrets found in repository"
+      action: escalate
+      max_retries: 0
+      fallback: "Flag to user immediately, continue audit"
+
+    - error_class: language_unknown
+      description: "Scanner cannot determine primary language"
+      action: report
+      max_retries: 0
+      fallback: "Ask user, or skip language-specific checks"
+
+    - error_class: malformed_previous
+      description: "Previous DEBT.md exists but is malformed"
+      action: report
+      max_retries: 0
+      fallback: "Ignore previous, generate fresh report"
+
+    - error_class: repeated_failure
+      description: "Same scan error after 3 retries"
+      action: stop
+      max_retries: 3
+      fallback: "Skip that scan category, note in report"
+
+  self_correction:
+    - "Auto-fix applied instead of documented: revert the fix, document the finding in DEBT.md"
+    - "DEBT.md committed to git: alert user (they may not have wanted it committed)"
+    - "Scan category skipped: re-run the missing category, update scores"
+    - "Security finding not flagged immediately: flag retroactively, alert user"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: debt_report
+      type: object
+      consumers: [release-engineer, multi-agent-supervisor]
+      description: "DEBT.md with category scores, findings, and ROI-ordered recommendations"
+
+    - name: category_scores
+      type: object
+      consumers: [release-engineer]
+      description: "Per-category 0-10 scores for release readiness assessment"
+
+    - name: findings
+      type: array
+      consumers: [release-engineer, multi-agent-supervisor]
+      description: "All findings categorized by severity with fix effort estimates"
+
+    - name: portfolio_health
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Cross-repo comparison matrix and health rankings"
+
+  requires:
+    - name: repo_path
+      type: string
+      provider: context-mapper
+      description: "Absolute path to the target repository identified during context mapping"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  never_auto_fix: true
+  never_commit_to_git: true
+  secrets_immediate_flag: true
+  docker_sandbox_mandatory: true
+  reproducible_results: true
+  all_six_categories_required: true
+  max_docker_timeout_seconds: 300
+  max_docker_memory: "512m"
+  max_budget_per_repo_tokens: 2000
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [pip-audit]
+  system: [git, docker, grep]
+  skills: []
+  config: []

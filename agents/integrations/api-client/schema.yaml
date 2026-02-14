@@ -1,10 +1,43 @@
-name: api-client
-version: "1.0.0"
-description: Authenticated HTTP API client with retry and rate limiting
-category: integrations
-risk_level: low
-consensus_level: none
+# api-client schema v2.0.0
 
+name: api-client
+version: "2.0.0"
+description: "Authenticated HTTP API client with retry logic, rate limiting, response parsing, and structured error handling"
+type: agent
+category: integrations
+
+risk_level: low
+consensus_level: adaptive
+trust: autonomous
+parallel_safe: true
+tools: [Bash, WebFetch]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Making authenticated HTTP requests to external REST APIs"
+    - "Fetching paginated data from API endpoints that return collections"
+    - "Executing batch requests against multiple endpoints with concurrency control"
+    - "Integrating with third-party services (Slack, Jira, Stripe, etc.) via their REST APIs"
+  do_not_use_when:
+    - condition: "Scraping HTML web pages"
+      instead: "web-scrape skill"
+      reason: "HTML parsing requires DOM extraction, not JSON response handling"
+    - condition: "Searching the web for information"
+      instead: "web-search skill"
+      reason: "Search engines need query formulation, not direct API calls"
+    - condition: "Running git commands or GitHub CLI operations"
+      instead: "github-operations skill"
+      reason: "Git workflows need branch protection and commit conventions"
+    - condition: "Making requests to internal/local services with no auth"
+      instead: "Bash tool with curl directly"
+      reason: "Skill overhead is unnecessary for simple unauthenticated requests"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   operation:
     type: string
@@ -21,6 +54,8 @@ inputs:
     type: string
     required: true
     description: Base URL for the API
+    validation:
+      - "MUST use HTTPS for production requests"
   path:
     type: string
     required: true
@@ -63,6 +98,17 @@ inputs:
     required: false
     description: JSON key containing results array
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this API call is being performed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   success:
     type: boolean
@@ -86,17 +132,283 @@ outputs:
     type: string
     description: Error message if request failed
 
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: request
+    description: >
+      Make a single authenticated HTTP request.
+      Use when calling a specific API endpoint with known method, path, and parameters.
+      Do NOT use for bulk operations — use batch instead.
     risk: low
-    consensus: none
-  - name: paginate
-    risk: low
-    consensus: none
-  - name: batch
-    risk: medium
-    consensus: none
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      method:
+        type: string
+        required: true
+        enum: [GET, POST, PUT, PATCH, DELETE]
+        description: "HTTP method"
+      path:
+        type: string
+        required: true
+        description: "URL path appended to base_url"
+      params:
+        type: object
+        required: false
+        description: "Query string parameters"
+      json_body:
+        type: object
+        required: false
+        description: "JSON request body"
+      headers:
+        type: object
+        required: false
+        description: "Additional HTTP headers"
+      timeout:
+        type: integer
+        required: false
+        default: 30
+    outputs:
+      success:
+        type: boolean
+      status_code:
+        type: integer
+      headers:
+        type: object
+      body:
+        type: any
+        description: "Parsed response body (JSON, text, or binary)"
+      duration_ms:
+        type: integer
+      retries:
+        type: integer
+      error:
+        type: string
+    post_execution:
+      - "Check success flag"
+      - "For non-2xx responses, examine body and headers for error details"
+      - "For 401 responses with OAuth2, attempt token refresh before failing"
+      - "Track rate limit headers for subsequent requests"
 
+  - name: paginate
+    description: >
+      Fetch all pages of a paginated endpoint.
+      Use when the API returns collections across multiple pages.
+      Do NOT use without setting max_pages — unbounded pagination can exhaust quotas.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      path:
+        type: string
+        required: true
+        description: "API endpoint path"
+      params:
+        type: object
+        required: false
+        description: "Base query parameters"
+      page_param:
+        type: string
+        required: false
+        default: page
+        description: "Name of the page parameter"
+      per_page_param:
+        type: string
+        required: false
+        default: per_page
+      per_page:
+        type: integer
+        required: false
+        default: 100
+      results_key:
+        type: string
+        required: false
+        description: "JSON key containing the results array"
+      max_pages:
+        type: integer
+        required: false
+        default: 100
+        description: "Safety cap on pages fetched"
+    outputs:
+      results:
+        type: array
+        description: "Aggregated list of all results across pages"
+      pages_fetched:
+        type: integer
+      total_items:
+        type: integer
+    post_execution:
+      - "Verify total_items matches expectations"
+      - "If pages_fetched equals max_pages, there may be more data — report truncation"
+      - "Check for duplicate items across page boundaries"
+
+  - name: batch
+    description: >
+      Execute multiple requests with concurrency control.
+      Use when making several related API calls that can proceed independently.
+      Do NOT use when requests depend on each other's responses — sequence them with individual request calls instead.
+    risk: medium
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      requests:
+        type: array
+        required: true
+        description: "List of request specs [{method, path, params, json_body}]"
+      concurrency:
+        type: integer
+        required: false
+        default: 5
+        description: "Maximum parallel requests"
+      stop_on_error:
+        type: boolean
+        required: false
+        default: false
+        description: "Halt batch on first failure"
+    outputs:
+      results:
+        type: array
+        description: "List of APIResponse objects, one per request"
+      succeeded:
+        type: integer
+      failed:
+        type: integer
+    post_execution:
+      - "Check failed count"
+      - "Review individual error messages for failed requests"
+      - "If rate-limited mid-batch, remaining requests may need to be retried after the limit resets"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Authentication credentials are loaded from environment variables"
+    - "Base URL is reachable and uses HTTPS"
+    - "Rate limit budget is sufficient for the planned requests"
+
+  post_conditions:
+    - "Response was parsed into structured data (not raw text)"
+    - "No credentials appear in logs, output, or error messages"
+    - "Rate limit headers were tracked and respected"
+
+  checkpoints:
+    - trigger: "Authentication fails (401)"
+      action: "Check if token is expired, attempt refresh for OAuth2 before failing"
+    - trigger: "Rate limit is hit (429)"
+      action: "Wait for Retry-After duration before any further requests"
+    - trigger: "Response body is unexpectedly empty or malformed"
+      action: "Verify the Content-Type header matches expected format"
+    - trigger: "Pagination reaches max_pages limit"
+      action: "Report truncation, do not silently drop remaining data"
+    - trigger: "About to make a destructive API call (DELETE, PUT with full replacement)"
+      action: "Verify intent and target"
+
+  completion_checklist:
+    - "Authentication was applied (credentials loaded from environment)"
+    - "Rate limit headers were tracked and respected"
+    - "Response was parsed into structured data (not raw text)"
+    - "No credentials appear in logs, output, or error messages"
+    - "Pagination was bounded by max_pages limit"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: bad_request
+      description: "400 Bad Request"
+      action: report
+      max_retries: 0
+      fallback: "Return error, do not retry"
+
+    - error_class: unauthorized
+      description: "401 Unauthorized"
+      action: retry
+      max_retries: 1
+      fallback: "Attempt token refresh (OAuth2), then fail"
+
+    - error_class: forbidden
+      description: "403 Forbidden"
+      action: report
+      max_retries: 0
+      fallback: "Return error, do not retry"
+
+    - error_class: not_found
+      description: "404 Not Found"
+      action: report
+      max_retries: 0
+      fallback: "Return error, do not retry"
+
+    - error_class: rate_limited
+      description: "429 Too Many Requests"
+      action: retry
+      max_retries: 3
+      fallback: "Wait for Retry-After header, then retry"
+
+    - error_class: server_error
+      description: "5xx Server Error"
+      action: retry
+      max_retries: 3
+      fallback: "Retry with exponential backoff"
+
+    - error_class: timeout
+      description: "Request timed out"
+      action: report
+      max_retries: 0
+      fallback: "Return timeout error"
+
+    - error_class: connection_error
+      description: "Connection failure"
+      action: report
+      max_retries: 0
+      fallback: "Return connection error"
+
+    - error_class: repeated_failure
+      description: "Same error after max_retries"
+      action: stop
+      fallback: "Stop, report what was attempted"
+
+  self_correction:
+    - "Credentials exposed in output: immediately flag as security incident, recommend rotation"
+    - "Rate limit ignored: pause all requests, wait for the reset window, acknowledge the violation"
+    - "4xx error retried: stop retrying, return the error response directly"
+    - "TLS verification skipped: halt the request, re-enable verification, report the violation"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: api_response
+      type: object
+      consumers: [context-mapper, multi-agent-supervisor]
+      description: "Structured API response with status, headers, and parsed body"
+
+    - name: paginated_results
+      type: array
+      consumers: [multi-agent-supervisor]
+      description: "Aggregated results from paginated API endpoints"
+
+  requires:
+    - name: api_endpoints
+      type: array
+      provider: web-scrape
+      description: "API endpoint URLs discovered during scraping or configuration"
+
+    - name: auth_credentials
+      type: object
+      provider: environment
+      description: "Authentication credentials loaded from environment variables"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   default_timeout_s: 30
   max_pagination_pages: 100
@@ -105,6 +417,11 @@ constraints:
   credentials_from_env_only: true
   max_response_size_mb: 50
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
   python: ["requests", "urllib3"]
   optional: ["aiohttp"]
+  skills: []
+  config: []

@@ -1,10 +1,44 @@
-name: web-search
-version: "1.0.0"
-description: Search the web for information with rate limiting and caching
-category: browser
-risk_level: low
-consensus_level: none
+# web-search schema v2.0.0
 
+name: web-search
+version: "2.0.0"
+description: "Search the web for information with rate limiting, caching, and structured source attribution"
+type: agent
+category: browser
+
+risk_level: low
+consensus_level: adaptive
+trust: autonomous
+parallel_safe: true
+tools: [WebSearch, WebFetch, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "A task requires information beyond the model's training cutoff date"
+    - "Verifying claims or facts against current sources"
+    - "Gathering documentation, release notes, or changelogs for specific software versions"
+    - "Monitoring news or current events relevant to a task"
+    - "Comparing multiple sources to establish consensus on a topic"
+  do_not_use_when:
+    - condition: "Information is already available in the local codebase"
+      instead: "Grep/Glob tools directly"
+      reason: "Local lookups are faster and more reliable"
+    - condition: "Fetching a specific known URL"
+      instead: "web-scrape skill"
+      reason: "Scraping extracts structured content from a single page"
+    - condition: "Querying a specific API with known endpoints"
+      instead: "api-client skill"
+      reason: "API clients handle auth, pagination, and structured responses"
+    - condition: "Answer is well within the model's training data and not time-sensitive"
+      instead: "Answer directly"
+      reason: "Searching wastes time and tokens"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   query:
     type: string
@@ -13,7 +47,7 @@ inputs:
   search_type:
     type: string
     required: false
-    enum: [web_search, news_search, image_search, site_search]
+    enum: [web_search, news_search, technical_search, site_search]
     default: web_search
     description: Type of search to perform
   num_results:
@@ -32,6 +66,17 @@ inputs:
     default: any
     description: Filter results by publication recency
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this search is being performed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   results:
     type: array
@@ -56,30 +101,265 @@ outputs:
   cached:
     type: boolean
     description: Whether results were served from cache
+  sources:
+    type: array
+    items:
+      type: string
+    description: List of unique domains searched
 
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: web_search
+    description: >
+      Search for general information using broad queries.
+      Use when the topic is unfamiliar or the best source is unknown.
+      Do NOT use when a specific URL or API endpoint is already known.
     risk: low
-    consensus: none
-    rate_limit: "2s minimum between requests"
-  - name: news_search
-    risk: low
-    consensus: none
-    rate_limit: "2s minimum between requests"
-  - name: image_search
-    risk: low
-    consensus: none
-    rate_limit: "3s minimum between requests"
-  - name: site_search
-    risk: low
-    consensus: none
-    rate_limit: "2s minimum between requests"
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      query:
+        type: string
+        required: true
+        description: "Search terms, broad first then refined"
+      num_results:
+        type: integer
+        required: false
+        default: 10
+      recency:
+        type: string
+        required: false
+        enum: [day, week, month, any]
+        description: "Time filter for results"
+    outputs:
+      results:
+        type: array
+        description: "List of {title, url, snippet, date} objects"
+      result_count:
+        type: integer
+      sources:
+        type: array
+        description: "List of unique domains searched"
+    post_execution:
+      - "Verify result relevance before including in response"
+      - "Cross-reference claims across multiple sources"
+      - "If zero results, broaden the query terms before concluding information is unavailable"
 
+  - name: news_search
+    description: >
+      Search for recent news or current events.
+      Use when recency is critical (last 24h to 30 days).
+      Do NOT use for evergreen reference material.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      query:
+        type: string
+        required: true
+        description: "News-oriented search terms"
+      recency:
+        type: string
+        required: false
+        default: week
+        enum: [day, week, month]
+      num_results:
+        type: integer
+        required: false
+        default: 10
+    outputs:
+      results:
+        type: array
+        description: "List of {title, url, snippet, date, source} objects"
+      result_count:
+        type: integer
+    post_execution:
+      - "Prioritize reputable news sources"
+      - "Note publication timestamps"
+      - "Check multiple sources for verification before presenting as fact"
+
+  - name: technical_search
+    description: >
+      Search for documentation, code examples, or technical reference material.
+      Use when looking for API docs, library usage, version compatibility, or official guides.
+      Do NOT use for general knowledge questions.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      query:
+        type: string
+        required: true
+        description: "Technical search terms including version numbers"
+      site_filter:
+        type: string
+        required: false
+        description: "Restrict to specific domain (e.g., docs.python.org)"
+      num_results:
+        type: integer
+        required: false
+        default: 10
+    outputs:
+      results:
+        type: array
+        description: "List of {title, url, snippet, date} objects"
+      result_count:
+        type: integer
+    post_execution:
+      - "Target documentation sites and official sources"
+      - "Note version compatibility"
+      - "Prefer authoritative sources over blog posts"
+      - "Include code examples when relevant"
+
+  - name: site_search
+    description: >
+      Search within a specific domain.
+      Use when the target site is known but the exact page is not.
+      Do NOT use for broad discovery across the web.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      query:
+        type: string
+        required: true
+      domain:
+        type: string
+        required: true
+        description: "Domain to restrict search to"
+      num_results:
+        type: integer
+        required: false
+        default: 10
+    outputs:
+      results:
+        type: array
+        description: "List of {title, url, snippet} objects"
+      result_count:
+        type: integer
+    post_execution:
+      - "Verify results are actually from the specified domain"
+      - "If zero results, try the broader web_search capability"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Search query is non-empty and well-formed"
+    - "Rate limit interval has elapsed since last request"
+    - "Search type is valid for the query intent"
+
+  post_conditions:
+    - "All results include source attribution (title, URL, domain)"
+    - "Publication dates are included where available"
+    - "No duplicate results in the response"
+
+  checkpoints:
+    - trigger: "Zero results returned for a reasonable query"
+      action: "Consider query reformulation before concluding information is unavailable"
+    - trigger: "All results are from a single source"
+      action: "Broaden search to verify claims across multiple sources"
+    - trigger: "Results contradict each other"
+      action: "Note the disagreement and cite both sides"
+    - trigger: "Search involves sensitive topics (medical, legal, financial)"
+      action: "Add appropriate caveats and disclaimers"
+    - trigger: "About to present search results as established fact"
+      action: "Verify against multiple sources first"
+
+  completion_checklist:
+    - "All results include source attribution (title, URL, domain)"
+    - "Publication dates are included where available"
+    - "Results are relevant to the original query"
+    - "Multiple sources corroborate key claims"
+    - "No duplicate results in the response"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: rate_limited
+      description: "429 Too Many Requests"
+      action: retry
+      max_retries: 3
+      fallback: "Exponential backoff, retry after delay"
+
+    - error_class: timeout
+      description: "Request timed out"
+      action: retry
+      max_retries: 1
+      fallback: "Retry once with longer timeout"
+
+    - error_class: no_results
+      description: "Zero results returned"
+      action: report
+      max_retries: 0
+      fallback: "Suggest alternative queries, broaden terms"
+
+    - error_class: captcha
+      description: "CAPTCHA encountered"
+      action: stop
+      max_retries: 0
+      fallback: "Report and do not attempt bypass"
+
+    - error_class: connection_failure
+      description: "Connection error"
+      action: retry
+      max_retries: 1
+      fallback: "Report, suggest trying again later"
+
+    - error_class: repeated_failure
+      description: "Same error after max_retries"
+      action: stop
+      fallback: "Stop, report what was tried"
+
+  self_correction:
+    - "Results returned without source attribution: retroactively add sources before delivering to user"
+    - "Rate limit ignored: immediately pause, wait the required interval, acknowledge the violation"
+    - "Cache bypassed unnecessarily: note the miss, ensure future queries check cache first"
+    - "Relevance check skipped: re-evaluate results before proceeding"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: search_results
+      type: array
+      consumers: [context-mapper, web-scrape]
+      description: "Structured search results with titles, URLs, snippets, and dates"
+
+    - name: source_urls
+      type: array
+      consumers: [web-scrape, api-client]
+      description: "List of discovered URLs for further scraping or API exploration"
+
+  requires:
+    - name: search_query
+      type: string
+      provider: multi-agent-supervisor
+      description: "Query string formulated by the orchestrator or upstream agent"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   rate_limit_ms: 2000
   cache_ttl_seconds: 3600
   max_results_per_query: 20
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
   python: ["requests", "beautifulsoup4"]
   system: []
+  skills: []
+  config: []

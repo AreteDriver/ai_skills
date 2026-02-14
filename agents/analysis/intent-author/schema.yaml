@@ -1,0 +1,450 @@
+# intent-author schema v2.0.0
+
+name: intent-author
+version: "2.0.0"
+description: "Teaches agents how to publish well-structured intents for Convergent's intent graph — schema, quality criteria, and authoring patterns"
+type: agent
+category: analysis
+
+risk_level: low
+consensus_level: any
+trust: autonomous
+parallel_safe: true
+tools: [Read, Write, Edit, Glob, Grep]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "An agent needs to publish a new intent to the Convergent intent graph"
+    - "An agent's work reaches a decision point (choosing a data model, API shape, dependency)"
+    - "Updating an existing intent because stability changed or scope was refined"
+    - "Reviewing whether existing intents are well-formed and machine-comparable"
+    - "During intent validation before publishing to the graph"
+  do_not_use_when:
+    - condition: "Resolving conflicts between intents"
+      instead: "Convergent's IntentResolver directly"
+      reason: "This skill authors intents, it doesn't resolve conflicts between them"
+    - condition: "Resolving entity ambiguity across documents"
+      instead: "entity-resolver"
+      reason: "Intent authoring is about agent decisions, not document entities"
+    - condition: "Building the intent graph infrastructure"
+      instead: "Convergent's codebase directly"
+      reason: "This skill teaches usage, not implementation"
+    - condition: "The workflow doesn't use Convergent"
+      instead: "Skip intent authoring entirely"
+      reason: "Intents are Convergent-specific and add overhead without the graph"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [author_intent, validate_intent, update_intent]
+    description: The intent authoring operation to perform
+
+  action:
+    type: string
+    required: false
+    description: What the agent is doing — must be specific and verifiable (required for author_intent)
+
+  category:
+    type: string
+    required: false
+    enum: [decision, interface, dependency, constraint]
+    description: Intent category (required for author_intent)
+
+  provides:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Concrete artifacts this intent makes available (required for author_intent)
+
+  requires:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Concrete artifacts this intent needs (required for author_intent)
+
+  constraints:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Rules this intent imposes on other agents (required for author_intent)
+
+  stability:
+    type: number
+    required: false
+    description: "0.0-1.0 confidence score (required for author_intent)"
+    validation:
+      - "MUST be between 0.0 and 1.0"
+      - "MUST NOT exceed 0.6 without passing tests"
+      - "MUST NOT exceed 0.8 without at least one dependent"
+
+  evidence:
+    type: array
+    items:
+      type: string
+    required: false
+    description: What supports the stability score (required if stability > 0.3)
+
+  files_affected:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Files this intent touches (required for author_intent)
+
+  interfaces_affected:
+    type: array
+    items:
+      type: string
+    required: false
+    description: APIs/schemas this intent changes (required for author_intent)
+
+  intent_node:
+    type: object
+    required: false
+    description: Existing IntentNode to validate (required for validate_intent)
+
+  intent_id:
+    type: string
+    required: false
+    description: ID of the intent to update (required for update_intent)
+
+  changes:
+    type: object
+    required: false
+    description: Fields to update with new values (required for update_intent)
+
+  reason:
+    type: string
+    required: false
+    description: Why the update is needed (required for update_intent)
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this intent operation is being performed.
+      Must state what decision was made and why it needs to be published or validated.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  intent_node:
+    type: object
+    description: The fully-formed IntentNode ready for publishing
+
+  validation_issues:
+    type: array
+    items:
+      type: string
+    description: Quality issues detected (empty if valid)
+
+  overlap_warning:
+    type: string
+    description: Warning if a similar intent already exists in the graph
+
+  valid:
+    type: boolean
+    description: Whether the intent passes all quality checks (for validate_intent)
+
+  issues:
+    type: array
+    items:
+      type: string
+    description: Specific quality problems found (for validate_intent)
+
+  suggestions:
+    type: array
+    items:
+      type: string
+    description: Improvement recommendations (for validate_intent)
+
+  updated_intent:
+    type: object
+    description: The modified IntentNode (for update_intent)
+
+  stability_delta:
+    type: number
+    description: How much stability changed (for update_intent)
+
+  dependents_affected:
+    type: array
+    items:
+      type: string
+    description: Other intents that depend on this one and may need review (for update_intent)
+
+  error:
+    type: string
+    description: Error message if operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: author_intent
+    description: >
+      Create a well-structured intent node following the schema and quality criteria.
+      Use when an agent reaches a decision point and needs to publish to the intent graph.
+      Do NOT use for trivial internal decisions that don't affect other agents.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      action:
+        type: string
+        required: true
+        description: "What the agent is doing (must be specific and verifiable)"
+        validation:
+          - "MUST be at least 20 characters"
+          - "MUST be specific enough that another agent could verify it"
+      category:
+        type: string
+        required: true
+        enum: [decision, interface, dependency, constraint]
+      provides:
+        type: array
+        required: true
+        description: "Concrete artifacts this intent makes available"
+      requires:
+        type: array
+        required: true
+        description: "Concrete artifacts this intent needs"
+      constraints:
+        type: array
+        required: true
+        description: "Rules this intent imposes on other agents"
+      stability:
+        type: number
+        required: true
+        description: "0.0-1.0 confidence score"
+      evidence:
+        type: array
+        required: false
+        description: "Required if stability > 0.3"
+      files_affected:
+        type: array
+        required: true
+        description: "Files this intent touches"
+      interfaces_affected:
+        type: array
+        required: true
+        description: "APIs/schemas this changes"
+    outputs:
+      intent_node:
+        type: object
+      validation_issues:
+        type: array
+      overlap_warning:
+        type: string
+    post_execution:
+      - "Verify validation_issues is empty before publishing"
+      - "Check that stability is honest relative to evidence"
+      - "Confirm no overlap with existing intents that should be consumed instead"
+
+  - name: validate_intent
+    description: >
+      Check an existing intent against the quality checklist and report issues.
+      Use for periodic intent review or before updating an intent.
+      Do NOT use as a replacement for authoring — validate after authoring.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      intent_node:
+        type: object
+        required: true
+        description: "The IntentNode to validate"
+    outputs:
+      valid:
+        type: boolean
+      issues:
+        type: array
+      suggestions:
+        type: array
+    post_execution:
+      - "Verify all quality checklist items were evaluated"
+      - "Check that issues are actionable (not just 'improve this')"
+      - "Confirm stability/evidence consistency was checked"
+
+  - name: update_intent
+    description: >
+      Modify an existing intent when stability changes or scope is refined.
+      Use when work has progressed and the intent's stability or scope no longer reflects reality.
+      Do NOT use to create new intents — use author_intent instead.
+    risk: low
+    consensus: any
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      intent_id:
+        type: string
+        required: true
+        description: "ID of the intent to update"
+      changes:
+        type: object
+        required: true
+        description: "Fields to update with new values"
+      reason:
+        type: string
+        required: true
+        description: "Why the update is needed"
+    outputs:
+      updated_intent:
+        type: object
+      stability_delta:
+        type: number
+      dependents_affected:
+        type: array
+    post_execution:
+      - "Verify the update was published to the graph"
+      - "If stability decreased by more than 0.2, check whether dependents were notified"
+      - "Confirm the reason field explains the change"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "For author_intent, all required fields are provided"
+    - "For validate_intent, a valid IntentNode object is provided"
+    - "For update_intent, the intent_id exists in the graph"
+
+  post_conditions:
+    - "All 8 quality checklist items pass"
+    - "Stability score is consistent with evidence provided"
+    - "No circular dependencies exist in requires chain"
+
+  checkpoints:
+    - trigger: "Stability is claimed above 0.6"
+      action: "Verify tests exist and pass"
+    - trigger: "Stability is claimed above 0.8"
+      action: "Verify at least one dependent agent has adopted this intent"
+    - trigger: "An intent's provides list overlaps with another intent"
+      action: "Determine if this is duplication or legitimate parallel work"
+    - trigger: "An intent has been unchanged for more than 1 hour during active work"
+      action: "Flag as potentially stale"
+    - trigger: "Before publishing"
+      action: "Run the full quality checklist one final time"
+
+  completion_checklist:
+    - "action is specific enough that another agent could verify it"
+    - "provides lists concrete artifacts, not vague descriptions"
+    - "requires is complete — nothing silently assumed"
+    - "constraints includes anything that would surprise another agent"
+    - "stability is honest and supported by evidence"
+    - "evidence is non-empty for stability > 0.3"
+    - "files_affected is accurate (not stale)"
+    - "No overlap with an existing intent you should consume instead"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: validation_failure
+      description: "Quality checklist validation fails"
+      action: retry
+      max_retries: 3
+      fallback: "Fix issues, re-validate"
+
+    - error_class: overlap_detected
+      description: "Overlap detected with existing intent"
+      action: report
+      max_retries: 0
+      fallback: "Review overlap, consume or differentiate"
+
+    - error_class: circular_dependency
+      description: "Circular dependency detected in requires chain"
+      action: report
+      max_retries: 0
+      fallback: "Restructure intents to break the cycle"
+
+    - error_class: graph_unavailable
+      description: "Intent graph is unavailable"
+      action: retry
+      max_retries: 1
+      fallback: "Queue intent for publishing when graph is available"
+
+    - error_class: evidence_mismatch
+      description: "Stability evidence contradicts the claimed score"
+      action: correct
+      max_retries: 0
+      fallback: "Lower stability to match evidence"
+
+    - error_class: repeated_failure
+      description: "Same validation error 3 times"
+      action: escalate
+      fallback: "Escalate to user — intent may need redesign"
+
+  self_correction:
+    - "Vague intent published: retract, rewrite with specific action and artifacts, re-publish"
+    - "Stability overestimated: publish update with corrected stability and honest evidence"
+    - "Stale intent detected: update immediately or retract if no longer relevant"
+    - "Circular dependency created: identify the cycle, restructure the dependent intent"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: intent_nodes
+      type: array
+      consumers: [multi-agent-supervisor]
+      description: "Well-structured intent nodes for publishing to Convergent's intent graph"
+
+    - name: validation_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Quality assessment of existing intents"
+
+    - name: staleness_flags
+      type: array
+      consumers: [multi-agent-supervisor]
+      description: "Intents that haven't been updated during active work"
+
+  requires:
+    - name: context_map
+      type: object
+      provider: context-mapper
+      description: "Project context for scoping affected files and interfaces"
+
+    - name: resolved_entities
+      type: array
+      provider: entity-resolver
+      description: "Canonical entity references for consistent intent naming"
+
+    - name: search_results
+      type: array
+      provider: file-operations
+      description: "File paths for populating files_affected"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  validation_before_publishing: true
+  honest_stability: true
+  stale_intent_threshold_seconds: 3600
+  no_circular_dependencies: true
+  provenance_tracked: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [json, dataclasses]
+  system: []
+  skills: [context-mapper, entity-resolver]
+  config: []

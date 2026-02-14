@@ -1,43 +1,92 @@
+# multi-agent-supervisor schema v2.0.0
+
 name: multi-agent-supervisor
-version: "1.0.0"
-description: Hierarchical multi-agent orchestration with triumvirate consensus
+version: "2.0.0"
+description: "Hierarchical multi-agent orchestration supervisor that decomposes tasks, delegates to specialized worker agents, tracks state, and employs triumvirate consensus for high-stakes operations"
+type: agent
 category: orchestration
+
 risk_level: medium
 consensus_level: adaptive
+trust: supervised
+parallel_safe: false
+tools: [Read, Write, Edit, Glob, Grep, Bash]
 
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Coordinating multiple specialized agents on a complex task that requires diverse capabilities"
+    - "Managing multi-step workflows where steps have dependencies and ordering constraints"
+    - "Orchestrating task pipelines that need safety controls, consensus, and state tracking"
+    - "A task requires browser, email, file, app, and system operations in combination"
+  do_not_use_when:
+    - condition: "A single agent can handle the task end-to-end"
+      instead: "The appropriate specialist agent directly"
+      reason: "Supervisor overhead wastes tokens on simple tasks"
+    - condition: "The task is purely analytical with no delegation needed"
+      instead: "An analysis skill (tech-debt-auditor, entity-resolver, etc.)"
+      reason: "The supervisor adds coordination cost with no benefit"
+    - condition: "You need parallel Claude Code sessions with direct peer communication"
+      instead: "agent-teams-orchestrator"
+      reason: "It provides native Agent Teams support with true parallelism"
+    - condition: "The task is a predefined sequential pipeline with no routing decisions"
+      instead: "A workflow skill"
+      reason: "Fixed pipelines don't need dynamic agent selection"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   task:
     type: string
     required: true
     description: The high-level task to decompose and execute
+
   context:
     type: object
     required: false
     description: Additional context for task execution
+
   agents_available:
     type: array
     items:
       type: string
     required: false
     description: List of agent names available in the pool
+
   max_retries:
     type: integer
     required: false
     default: 2
     description: Maximum retries per subtask before escalation
+
   require_consensus_for:
     type: array
     items:
       type: string
     required: false
-    default: ["destructive", "external", "financial"]
+    default: [destructive, external, financial]
     description: Categories of operations requiring triumvirate consensus
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this orchestration is being performed.
+      Forces the supervisor to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   status:
     type: string
     enum: [complete, blocked, failed, escalated]
     description: Final status of the orchestrated task
+
   steps:
     type: array
     items:
@@ -54,9 +103,11 @@ outputs:
         result:
           type: string
     description: Detailed breakdown of executed steps
+
   result:
     type: string
     description: Synthesized result from all agent outputs
+
   metrics:
     type: object
     properties:
@@ -70,23 +121,311 @@ outputs:
         type: number
     description: Execution metrics
 
+  error:
+    type: string
+    description: Error message if orchestration failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: task_decomposition
+    description: >
+      Break a complex request into discrete, ordered, agent-appropriate steps.
+      Use when receiving a multi-faceted user request that no single agent can handle.
+      Do NOT use for tasks a single agent handles well.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      task:
+        type: string
+        required: true
+        description: "The user's original request"
+      available_agents:
+        type: array
+        items:
+          type: string
+        required: true
+        description: Agents available in the current pool
+      context_map:
+        type: object
+        required: false
+        description: Pre-built context map from context-mapper
+    outputs:
+      steps:
+        type: array
+        description: Ordered list of steps with agent assignments and dependencies
+      parallelizable:
+        type: array
+        description: Which steps can run concurrently
+      consensus_required:
+        type: array
+        description: Which steps need triumvirate review
+    post_execution:
+      - "Verify each step has a clear scope, assigned agent, and acceptance criteria"
+      - "Confirm dependencies form a DAG (no cycles)"
+      - "Check that step count is proportional to task complexity"
+
+  - name: agent_routing
+    description: >
+      Assign a step to the most capable agent based on required capabilities and risk level.
+      Use when dispatching work after decomposition.
+      Do NOT use for consensus-required steps without running triumvirate first.
+    risk: medium
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      step:
+        type: object
+        required: true
+        description: The step to route, including scope and acceptance criteria
+      agent_pool:
+        type: array
+        items:
+          type: object
+        required: true
+        description: Available agents with their capability profiles
+      agent_load:
+        type: object
+        required: false
+        description: Current agent utilization metrics
+    outputs:
+      assigned_agent:
+        type: string
+        description: The agent selected for this step
+      agent_context:
+        type: object
+        description: Context payload to inject into the agent
+      timeout:
+        type: integer
+        description: Max seconds for agent execution
+    post_execution:
+      - "Verify the assigned agent has the required capabilities"
+      - "Confirm the context payload includes all upstream dependencies"
+
+  - name: consensus_vote
+    description: >
+      Run triumvirate consensus for high-stakes operations.
+      Use before any destructive, external-facing, or financially impactful operation.
+      Do NOT skip for operations marked high-risk in agent schemas.
+    risk: low
+    consensus: unanimous
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      operation:
+        type: string
+        required: true
+        description: Description of the proposed operation
+      risk_level:
+        type: string
+        required: true
+        enum: [low, medium, high, critical]
+        description: Risk level of the operation
+      evidence:
+        type: array
+        items:
+          type: string
+        required: true
+        description: Supporting data for the operation
+    outputs:
+      result:
+        type: string
+        enum: [UNANIMOUS, MAJORITY, SPLIT]
+        description: Consensus outcome
+      votes:
+        type: object
+        description: "Each role's vote and reasoning"
+      action:
+        type: string
+        enum: [proceed, proceed_with_logging, escalate_to_human]
+        description: Action to take based on vote result
+    post_execution:
+      - "If SPLIT, escalate to human immediately"
+      - "If MAJORITY, ensure logging is enabled before proceeding"
+
+  - name: result_synthesis
+    description: >
+      Combine outputs from all completed agents into a coherent deliverable.
+      Use after all agents in a pipeline complete.
+      Do NOT use if any required agent has failed without retry or escalation.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      agent_outputs:
+        type: array
+        items:
+          type: object
+        required: true
+        description: Structured outputs from all completed agents
+      original_task:
+        type: string
+        required: true
+        description: "The user's original request for alignment checking"
+      failures:
+        type: array
+        items:
+          type: object
+        required: false
+        description: Any agent failures and their resolution
+    outputs:
+      result:
+        type: object
+        description: Synthesized deliverable
+      status:
+        type: string
+        enum: [complete, partial, failed]
+        description: Overall synthesis status
+      gaps:
+        type: array
+        items:
+          type: string
+        description: Any missing pieces due to agent failures
+    post_execution:
+      - "Verify the synthesized result addresses the original task"
+      - "Check for contradictions between agent outputs"
+      - "Confirm any gaps are documented"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "At least one agent is available in the pool"
+    - "Task is decomposable (not a single-agent task)"
+    - "Consensus roles (Stheno, Euryale, Medusa) are available for high-risk operations"
+
+  post_conditions:
+    - "All decomposed steps have been executed or explicitly skipped with justification"
+    - "No agent failures were silently ignored"
+    - "Consensus was obtained for all high-risk operations"
+    - "Synthesized result addresses the original user request"
+
+  checkpoints:
+    - trigger: "A decomposition produces more than 7 steps"
+      action: "Consider whether the task is over-split"
+    - trigger: "An agent fails for the second time on the same step"
+      action: "Evaluate whether to reassign or escalate"
+    - trigger: "Consensus returns SPLIT"
+      action: "Do not proceed without human input"
+    - trigger: "Queue depth exceeds active agent count by 3x"
+      action: "Consider whether parallelism is needed"
+    - trigger: "About to synthesize results with any agent in failed state"
+      action: "Document gaps before proceeding"
+
+  completion_checklist:
+    - "All decomposed steps have been executed or explicitly skipped with justification"
+    - "No agent failures were silently ignored"
+    - "Consensus was obtained for all high-risk operations"
+    - "Synthesized result addresses the original user request"
+    - "All agent outputs conform to their expected schemas"
+    - "Failures include full context for debugging (what was attempted, what failed, what's needed)"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: agent_timeout
+      description: "Agent did not respond within timeout"
+      action: retry
+      max_retries: 1
+      fallback: "Retry once with increased timeout, then reassign to different agent"
+
+    - error_class: task_failure
+      description: "Agent failed to complete assigned task"
+      action: retry
+      max_retries: 2
+      fallback: "Reassign to same agent with refined instructions"
+
+    - error_class: unknown_agent_error
+      description: "Unrecognized agent error"
+      action: report
+      max_retries: 0
+      fallback: "Log full context, isolate agent, continue queue with remaining agents"
+
+    - error_class: resource_exhaustion
+      description: "No capacity for new task dispatch"
+      action: report
+      max_retries: 0
+      fallback: "Pause new task dispatch, alert user, wait for capacity"
+
+    - error_class: consensus_deadlock
+      description: "Triumvirate SPLIT vote"
+      action: escalate
+      max_retries: 0
+      fallback: "Escalate to human with all three votes and reasoning"
+
+    - error_class: repeated_failure
+      description: "Same error after max retries"
+      action: stop
+      fallback: "Stop, report what was attempted and what failed"
+
+  self_correction:
+    - "Task dispatched without decomposition: halt, decompose retroactively, re-evaluate routing"
+    - "Consensus skipped for high-risk operation: if already executed, log violation and alert user; if not yet executed, run consensus before proceeding"
+    - "Agent failure ignored: review the failed output, determine if downstream agents were affected, re-run if necessary"
+    - "Context not passed between agents: identify missing context, re-inject, and re-run affected agent"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: orchestration_result
+      type: object
+      consumers: [context-mapper]
+      description: "Synthesized result from multi-agent execution for upstream reporting"
+
+    - name: execution_metrics
+      type: object
+      consumers: [tech-debt-auditor]
+      description: "Step counts, completion times, and error rates for workflow analysis"
+
+    - name: consensus_decision
+      type: object
+      consumers: [file-operations, email-compose, github-operations]
+      description: "Triumvirate vote result gating downstream destructive/external operations"
+
+  requires:
+    - name: context_map
+      type: object
+      provider: context-mapper
+      description: "Pre-built context map for informed task decomposition"
+
+    - name: agent_schemas
+      type: array
+      provider: file-operations
+      description: "Schema definitions for available agents to inform routing decisions"
+
+# ─────────────────────────────────────────────
+# Agent Pool
+# ─────────────────────────────────────────────
 agent_pool:
   - name: system
-    capabilities: ["bash", "process_management", "file_operations"]
+    capabilities: [bash, process_management, file_operations]
     risk_level: medium
   - name: browser
-    capabilities: ["web_browsing", "scraping", "form_filling"]
+    capabilities: [web_browsing, scraping, form_filling]
     risk_level: low
   - name: email
-    capabilities: ["imap", "smtp", "gmail_api"]
+    capabilities: [imap, smtp, gmail_api]
     risk_level: high
   - name: app
-    capabilities: ["app_launch", "gui_automation"]
+    capabilities: [app_launch, gui_automation]
     risk_level: medium
   - name: file
-    capabilities: ["filesystem", "document_processing"]
+    capabilities: [filesystem, document_processing]
     risk_level: low
 
+# ─────────────────────────────────────────────
+# Triumvirate Consensus
+# ─────────────────────────────────────────────
 triumvirate:
   stheno:
     role: validator
@@ -102,6 +441,9 @@ triumvirate:
     majority: proceed_with_logging
     split: escalate_to_human
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
-  python: ["asyncio", "dataclasses"]
-  agents: ["file-operations", "web-search", "web-scrape", "email-compose", "github-operations"]
+  python: [asyncio, dataclasses]
+  agents: [file-operations, web-search, web-scrape, email-compose, github-operations]

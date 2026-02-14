@@ -1,92 +1,418 @@
-name: agent-teams-orchestrator
-version: "1.0.0"
-description: Claude Code Agent Teams coordination with parallel execution
-category: orchestration
-risk_level: medium
-consensus_level: none
+# agent-teams-orchestrator schema v2.0.0
 
+name: agent-teams-orchestrator
+version: "2.0.0"
+description: "Designs and coordinates Claude Code Agent Teams — multi-agent collaboration where teammate sessions work in parallel with direct communication, task claiming via file locks, and cross-referencing findings"
+type: agent
+category: orchestration
+
+risk_level: medium
+consensus_level: majority
+trust: supervised
+parallel_safe: false
+tools: [Read, Write, Edit, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "A task has naturally parallel subtasks with clear boundaries (e.g., multi-module code review)"
+    - "Combined output requires cross-referencing, not just concatenation (e.g., competing debugging hypotheses)"
+    - "Single-agent approach would require sequential context switching across large scopes"
+    - "Task scope exceeds what fits comfortably in one context window"
+    - "You need true parallel execution with independent context windows"
+  do_not_use_when:
+    - condition: "Task is inherently sequential with no parallelizable subtasks"
+      instead: "multi-agent-supervisor"
+      reason: "Agent Teams adds cost without parallelism benefit"
+    - condition: "Files are tightly coupled and teammates would constantly conflict"
+      instead: "Single specialist agent"
+      reason: "File contention causes more overhead than sequential execution"
+    - condition: "A single agent with good tools can handle the task in one pass"
+      instead: "Appropriate specialist agent directly"
+      reason: "The ~5x token cost is not justified"
+    - condition: "Simulated agent coordination without actual parallel sessions"
+      instead: "multi-agent-supervisor"
+      reason: "It handles sequential delegation without the token multiplier"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
+  operation:
+    type: string
+    required: true
+    enum: [team_design, coordination, synthesis]
+    description: The orchestration operation to perform
+
   task:
     type: string
     required: true
-    description: The task to decompose across teammates
-  team_template:
-    type: string
+    description: The task to parallelize or the active task being coordinated
+
+  available_context:
+    type: object
     required: false
-    enum: [multi_reviewer, parallel_debug, multi_module, documentation_sprint, custom]
-    description: Pre-built team template to use
-  teammates:
-    type: array
-    items:
-      type: object
-      properties:
-        role:
-          type: string
-        specialization:
-          type: string
-        scope:
-          type: array
-          items:
-            type: string
-    required: false
-    description: Custom team composition (if template is custom)
-  max_teammates:
+    description: Context map, repo structure, file inventory from context-mapper
+
+  budget_constraint:
     type: integer
     required: false
-    default: 5
-    description: Maximum number of parallel teammates
+    description: Maximum token budget across all teammates
 
-outputs:
-  status:
+  task_board_path:
     type: string
-    enum: [complete, partial, failed]
-    description: Overall team execution status
-  team_results:
+    required: false
+    description: Path to the .tasks/ directory (required for coordination)
+    validation:
+      - "MUST be an absolute path (starts with /)"
+
+  teammate_outputs:
+    type: array
+    required: false
+    description: Structured outputs from all teammates (required for synthesis)
+
+  conflicts:
+    type: array
+    required: false
+    description: Detected conflicts between teammates
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY multi-agent coordination is being used.
+      Must justify why this task benefits from multiple agents over a single agent.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  success:
+    type: boolean
+    description: Whether the operation completed successfully
+
+  team_composition:
     type: array
     items:
       type: object
-      properties:
-        role:
-          type: string
-        status:
-          type: string
-        findings:
-          type: string
-        conflicts:
-          type: array
-          items:
-            type: string
-    description: Per-teammate results
-  synthesis:
-    type: string
-    description: Unified deliverable synthesized from all teammate outputs
-  conflicts_resolved:
+    description: Roles with specializations, scopes, and file assignments
+
+  coordination_protocol:
+    type: object
+    description: How teammates communicate and sync
+
+  task_board:
+    type: object
+    description: File-based task structure
+
+  cost_estimate:
+    type: object
+    description: Estimated token cost vs single-agent baseline
+
+  completion_criteria:
     type: array
     items:
       type: string
-    description: List of conflicts identified and how they were resolved
+    description: Measurable criteria for when to consider the task done
 
-team_templates:
-  multi_reviewer:
-    size: 3
-    roles: [security_reviewer, performance_reviewer, quality_reviewer]
-  parallel_debug:
-    size: 3
-    roles: [hypothesis_a, hypothesis_b, hypothesis_c]
-  multi_module:
-    size: 3
-    roles: [frontend, backend, data]
-  documentation_sprint:
-    size: 3
-    roles: [api_docs, architecture_docs, user_docs]
+  status_update:
+    type: object
+    description: Per-teammate progress summary (for coordination)
 
+  resolutions:
+    type: array
+    items:
+      type: object
+    description: Conflict resolutions applied (for coordination)
+
+  reassignments:
+    type: array
+    items:
+      type: object
+    description: Tasks reassigned due to teammate issues (for coordination)
+
+  unified_deliverable:
+    type: object
+    description: The synthesized result from all teammates (for synthesis)
+
+  agreements:
+    type: array
+    items:
+      type: string
+    description: Findings all teammates agreed on (for synthesis)
+
+  conflicts_resolved:
+    type: array
+    items:
+      type: object
+    description: Contradictions resolved with evidence (for synthesis)
+
+  dissenting_opinions:
+    type: array
+    items:
+      type: string
+    description: Valuable minority views preserved (for synthesis)
+
+  error:
+    type: string
+    description: Error message if operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: team_design
+    description: >
+      Design team composition, roles, and coordination protocol for a multi-agent task.
+      Use when planning a new parallel task.
+      Do NOT use for tasks that don't benefit from parallelization — the ~5x token cost
+      must be justified by the parallelism benefit.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      task:
+        type: string
+        required: true
+      available_context:
+        type: object
+        required: false
+        description: "Context map, repo structure, file inventory"
+      budget_constraint:
+        type: integer
+        required: false
+    outputs:
+      team_composition:
+        type: array
+        items:
+          type: object
+      coordination_protocol:
+        type: object
+      task_board:
+        type: object
+      cost_estimate:
+        type: object
+      completion_criteria:
+        type: array
+        items:
+          type: string
+    post_execution:
+      - "Verify role scopes don't overlap on the same files"
+      - "Confirm cost estimate is justified by parallelism benefit"
+      - "Check that completion criteria are measurable"
+
+  - name: coordination
+    description: >
+      Monitor and manage active teammate sessions.
+      Use during parallel execution to track progress and resolve conflicts.
+      Do NOT use after all teammates have completed — switch to synthesis.
+    risk: medium
+    consensus: any
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      task_board_path:
+        type: string
+        required: true
+        description: "Path to the .tasks/ directory"
+      teammate_messages:
+        type: array
+        required: false
+        description: "Recent SendMessage communications"
+      conflicts:
+        type: array
+        required: false
+        description: "Detected conflicts between teammates"
+    outputs:
+      status_update:
+        type: object
+      resolutions:
+        type: array
+        items:
+          type: object
+      reassignments:
+        type: array
+        items:
+          type: object
+    post_execution:
+      - "Verify no tasks are double-claimed"
+      - "Check for stuck teammates (no progress in 2+ minutes)"
+      - "Confirm conflicts were resolved, not just acknowledged"
+
+  - name: synthesis
+    description: >
+      Collect, reconcile, and unify all teammate outputs into a single deliverable.
+      Use after all teammates have completed their work.
+      Do NOT use if any teammate is still executing.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      teammate_outputs:
+        type: array
+        required: true
+        description: "Structured outputs from all teammates"
+      original_task:
+        type: string
+        required: true
+        description: "The original task for alignment checking"
+      conflicts:
+        type: array
+        required: false
+        description: "Unresolved disagreements between teammates"
+    outputs:
+      unified_deliverable:
+        type: object
+      agreements:
+        type: array
+        items:
+          type: string
+      conflicts_resolved:
+        type: array
+        items:
+          type: object
+      dissenting_opinions:
+        type: array
+        items:
+          type: string
+    post_execution:
+      - "Verify the unified deliverable addresses the original task"
+      - "Confirm all conflicts were resolved with evidence, not arbitrarily"
+      - "Check that dissenting opinions are documented where valuable"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Task has been analyzed for parallelization potential"
+    - "Cost estimate justifies multi-agent approach over single agent"
+    - "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is enabled (or fallback plan exists)"
+
+  post_conditions:
+    - "All task board items are complete or explicitly abandoned with justification"
+    - "No teammate outputs contradict each other without resolution"
+    - "Synthesized deliverable addresses the original task"
+    - "Cost was proportional to benefit"
+
+  checkpoints:
+    - trigger: "A teammate has been executing for more than 2x the expected duration"
+      action: "Check if they are stuck or looping"
+    - trigger: "Two teammates report conflicting findings on the same file"
+      action: "Resolve before either proceeds further"
+    - trigger: "Cost estimate exceeds 5x single-agent baseline"
+      action: "Re-evaluate whether parallelism is justified"
+    - trigger: "About to launch more than 3 teammates"
+      action: "Confirm the task truly benefits from this many parallel workers"
+    - trigger: "Before synthesis"
+      action: "Verify all teammates have written their results to the results/ directory"
+
+  completion_checklist:
+    - "All task board items are in 'complete' status or explicitly abandoned with justification"
+    - "No teammate outputs contradict each other without resolution"
+    - "Synthesized deliverable addresses the original task"
+    - "Cost was proportional to benefit (documented if over budget)"
+    - "File conflicts between teammates have been resolved"
+    - "Dissenting opinions are documented where they add value"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: teammate_stuck
+      description: "Teammate making no progress"
+      action: retry
+      max_retries: 1
+      fallback: "Send clarifying message, then reassign task"
+
+    - error_class: task_double_claimed
+      description: "Two teammates claimed the same task"
+      action: report
+      max_retries: 0
+      fallback: "Resolve via file lock, reassign duplicate"
+
+    - error_class: off_scope_output
+      description: "Teammate produces output outside their assigned scope"
+      action: retry
+      max_retries: 1
+      fallback: "Re-send briefing with explicit scope boundaries"
+
+    - error_class: conflicting_findings
+      description: "Teammates report contradictory findings"
+      action: report
+      max_retries: 0
+      fallback: "Lead arbitrates with evidence, documents dissent"
+
+    - error_class: feature_unavailable
+      description: "Agent Teams experimental feature not enabled"
+      action: report
+      max_retries: 0
+      fallback: "Fall back to multi-agent-supervisor sequential mode"
+
+    - error_class: repeated_teammate_failure
+      description: "Same teammate fails twice"
+      action: stop
+      max_retries: 2
+      fallback: "Remove from team, redistribute tasks"
+
+  self_correction:
+    - "Teammates launched without coordination protocol: pause, write protocol, brief all teammates retroactively"
+    - "File conflict detected between teammates: halt affected teammates, resolve conflict, then resume"
+    - "Cost exceeded estimate by >2x without justification: document the overrun, adjust future estimates"
+    - "Synthesis performed with incomplete teammate outputs: re-collect missing outputs before finalizing"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: team_composition
+      type: array
+      consumers: [multi-agent-supervisor]
+      description: "Team roles with specializations, scopes, file assignments, and coordination protocol"
+
+    - name: synthesized_deliverable
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Unified output from all teammates with agreements, resolved conflicts, and dissenting opinions"
+
+    - name: cost_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Actual token cost vs estimate, with justification and optimization suggestions"
+
+  requires:
+    - name: task_description
+      type: string
+      provider: multi-agent-supervisor
+      description: "The task to decompose and parallelize"
+
+    - name: context_map
+      type: object
+      provider: context-mapper
+      description: "Repository structure, file inventory, and dependency graph for scope assignment"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   max_teammates: 5
-  cost_multiplier: "~5x tokens vs single agent"
-  teammates_share_context: false
+  teammates_no_shared_history: true
   teammates_load_project_context: true
-  file_conflicts_resolved_by_lead: true
+  lead_resolves_file_conflicts: true
+  cost_estimate_before_launch: true
+  document_team_decisions: true
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
-  env: ["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"]
-  system: ["claude"]
+  python: []
+  system: []
+  skills: [multi-agent-supervisor]
+  config: [CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS]

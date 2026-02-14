@@ -1,0 +1,350 @@
+# workflow-debugger schema v2.0.0
+
+name: workflow-debugger
+version: "2.0.0"
+description: "Diagnoses why Gorgon workflows fail — reads checkpoint state, agent logs, budget traces, and output contracts to produce root-cause analysis"
+type: agent
+category: analysis
+
+risk_level: low
+consensus_level: any
+trust: autonomous
+parallel_safe: true
+tools: [Read, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "A Gorgon workflow failed and you need to understand why"
+    - "An agent produced unexpected or garbage output within a workflow"
+    - "A workflow ran out of budget before completing"
+    - "A pipeline hung and never completed"
+    - "Post-mortem analysis is needed after a successful workflow to find optimization opportunities"
+  do_not_use_when:
+    - condition: "Debugging application code within a repository"
+      instead: "Debugging persona or workflow"
+      reason: "This skill debugs workflow orchestration, not application logic"
+    - condition: "Auditing repository health or tech debt"
+      instead: "technical-debt-auditor"
+      reason: "This skill inspects workflow runs, not codebases"
+    - condition: "Designing or modifying workflows"
+      instead: "multi-agent-supervisor"
+      reason: "This skill diagnoses problems, it doesn't build workflows"
+    - condition: "Simple tool error (file not found, permission denied)"
+      instead: "Check the error directly"
+      reason: "Workflow-level diagnosis is overkill for single-step failures"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [diagnose_failure, post_mortem]
+    description: The diagnostic operation to perform
+
+  run_id:
+    type: string
+    required: true
+    description: The workflow run identifier
+
+  checkpoint_db:
+    type: string
+    required: true
+    description: Path to the checkpoint database
+    validation:
+      - "MUST be an absolute path (starts with /)"
+      - "MUST be a valid SQLite database or checkpoint directory"
+
+  log_path:
+    type: string
+    required: true
+    description: Path to agent log directory
+    validation:
+      - "MUST be an absolute path (starts with /)"
+
+  symptoms:
+    type: string
+    required: false
+    description: User-reported symptoms to guide diagnosis (for diagnose_failure)
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this diagnosis is being performed.
+      Makes logs auditable and reduces hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  success:
+    type: boolean
+    description: Whether the diagnostic operation completed successfully
+
+  failure_point:
+    type: object
+    description: Which agent failed, at what step, with what error
+
+  root_cause:
+    type: string
+    description: >
+      Classified failure category from the taxonomy: Contract Violation, Budget Exhaustion,
+      Timeout, Dependency Failure, Context Overflow, Hallucination, Checkpoint Corruption,
+      or External Failure
+
+  evidence:
+    type: array
+    items:
+      type: object
+    description: Specific log lines, output mismatches, and budget data supporting the diagnosis
+
+  fix_options:
+    type: array
+    items:
+      type: object
+    description: Ordered by ROI, each with effort estimate and scope of prevention
+
+  budget_analysis:
+    type: object
+    description: Per-agent token usage and waste estimate
+
+  recommendation:
+    type: string
+    description: The single best fix to apply
+
+  stage_breakdown:
+    type: array
+    items:
+      type: object
+    description: Per-agent duration, token usage, and health status (for post_mortem)
+
+  optimization_opportunities:
+    type: array
+    items:
+      type: object
+    description: Identified waste with estimated savings (for post_mortem)
+
+  total_savings_estimate:
+    type: object
+    description: Aggregate token and time savings (for post_mortem)
+
+  error:
+    type: string
+    description: Error message if diagnostic operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: diagnose_failure
+    description: >
+      Full diagnostic procedure for a failed workflow run: locate failure point,
+      examine outputs, check budget, read logs, classify, and report.
+      Use when a workflow has failed and the cause is unknown.
+      Do NOT use for successful workflows — use post_mortem instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      run_id:
+        type: string
+        required: true
+      checkpoint_db:
+        type: string
+        required: true
+      log_path:
+        type: string
+        required: true
+      symptoms:
+        type: string
+        required: false
+        description: "User-reported symptoms to guide diagnosis"
+    outputs:
+      failure_point:
+        type: object
+      root_cause:
+        type: string
+      evidence:
+        type: array
+        items:
+          type: object
+      fix_options:
+        type: array
+        items:
+          type: object
+      budget_analysis:
+        type: object
+      recommendation:
+        type: string
+    post_execution:
+      - "Verify the root cause classification is supported by at least 2 pieces of evidence"
+      - "Check that fix options span different effort levels (quick, proper, infrastructure)"
+      - "Confirm budget analysis accounts for all agents, not just the failed one"
+
+  - name: post_mortem
+    description: >
+      Efficiency analysis for a completed (successful) workflow run: identify wasted
+      tokens, slow stages, and optimization opportunities.
+      Use after a workflow completes successfully but you suspect it could be faster or cheaper.
+      Do NOT use for failed runs — use diagnose_failure instead.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      run_id:
+        type: string
+        required: true
+      checkpoint_db:
+        type: string
+        required: true
+      log_path:
+        type: string
+        required: true
+    outputs:
+      stage_breakdown:
+        type: array
+        items:
+          type: object
+      optimization_opportunities:
+        type: array
+        items:
+          type: object
+      total_savings_estimate:
+        type: object
+    post_execution:
+      - "Verify stage breakdown covers all agents"
+      - "Check that optimization opportunities include specific implementation suggestions"
+      - "Confirm savings estimates are conservative (don't overstate)"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Checkpoint database exists and is readable"
+    - "Agent log directory exists with log files"
+    - "Workflow run ID matches a run in the checkpoint database"
+
+  post_conditions:
+    - "Root cause is classified into exactly one taxonomy category"
+    - "At least 2 pieces of evidence support the classification"
+    - "Fix options include at least one quick fix and one proper fix"
+    - "Budget analysis covers all agents in the workflow"
+
+  checkpoints:
+    - trigger: "Multiple failure categories seem to apply"
+      action: "Determine which is the root cause vs. which are symptoms"
+    - trigger: "Budget consumption is above 90% for any agent"
+      action: "Investigate whether budget exhaustion contributed to the failure"
+    - trigger: "Agent logs show repeated identical tool calls"
+      action: "Flag likely infinite loop as potential root cause"
+    - trigger: "Checkpoint data is incomplete or corrupted"
+      action: "Note the limitation and work with available evidence"
+    - trigger: "Before finalizing the report"
+      action: "Verify the recommendation addresses the root cause, not just a symptom"
+
+  completion_checklist:
+    - "Failure point is identified with specific agent, step, and error"
+    - "Root cause is classified into exactly one taxonomy category"
+    - "At least 2 pieces of evidence support the classification"
+    - "Fix options span multiple effort levels (quick fix, proper fix, infrastructure fix)"
+    - "Budget analysis covers all agents in the workflow, not just the failed one"
+    - "Recommendation identifies the single best fix with justification"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: checkpoint_not_found
+      description: "Checkpoint database not found at specified path"
+      action: report
+      max_retries: 0
+      fallback: "Report, ask user for correct database path"
+
+    - error_class: logs_missing
+      description: "Agent logs missing or corrupted"
+      action: report
+      max_retries: 0
+      fallback: "Diagnose with available data, note the limitation"
+
+    - error_class: ambiguous_root_cause
+      description: "Root cause is ambiguous, multiple categories apply"
+      action: report
+      max_retries: 0
+      fallback: "Report top 2 candidates ranked by likelihood"
+
+    - error_class: inconsistent_state
+      description: "Workflow state is internally inconsistent"
+      action: report
+      max_retries: 0
+      fallback: "Report the inconsistency as a finding, diagnose what you can"
+
+    - error_class: repeated_failure
+      description: "Same diagnostic procedure fails 3 times"
+      action: stop
+      max_retries: 3
+      fallback: "Stop, report raw data and ask user to interpret"
+
+  self_correction:
+    - "Workflow state modified during diagnosis: alert user immediately, attempt to restore from checkpoint"
+    - "Root cause reported without sufficient evidence: retract, gather more evidence, re-classify"
+    - "Fix options missing effort estimates: add estimates before delivering report"
+    - "Budget analysis skipped: run it retroactively before finalizing"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: diagnostic_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Root-cause analysis with failure point, evidence, fix options, and budget analysis"
+
+    - name: budget_analysis
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Per-agent token usage, waste estimates, and optimization recommendations"
+
+    - name: post_mortem_report
+      type: object
+      consumers: [multi-agent-supervisor]
+      description: "Efficiency analysis with stage breakdown, optimization opportunities, and savings estimates"
+
+  requires:
+    - name: checkpoint_data
+      type: object
+      provider: multi-agent-supervisor
+      description: "Checkpoint database and log paths from the failed or completed workflow run"
+
+    - name: workflow_definition
+      type: object
+      provider: multi-agent-supervisor
+      description: "The workflow YAML definition to compare expected vs actual behavior"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  read_only: true
+  non_blocking: true
+  evidence_based: true
+  actionable_reports: true
+  no_guessing: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [sqlite3, json]
+  system: [sqlite3]
+  skills: []
+  config: []

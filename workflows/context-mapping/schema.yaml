@@ -1,25 +1,61 @@
+# context-mapping schema v2.0.0
+
 name: context-mapper
-version: "1.0.0"
-description: Pre-execution context mapping — maps codebase before agents write code
-category: workflow
+version: "2.0.0"
+description: "Pre-execution context mapping — maps codebase structure, dependencies, and conventions before agents write code"
+type: workflow
+category: analysis
+
 risk_level: low
 consensus_level: none
+trust: supervised
+parallel_safe: false
+tools: [Read, Glob, Grep, Bash]
 
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Starting a complex task in an unfamiliar or large codebase"
+    - "Planning multi-file changes that touch shared dependencies"
+    - "Multiple agents or changes might interact with the same files"
+    - "Validating assumptions about codebase conventions before execution"
+  do_not_use_when:
+    - condition: "Small, isolated change to a single file"
+      instead: "Engineering persona directly"
+      reason: "Mapping overhead exceeds the change complexity"
+    - condition: "Codebase is already well-understood from recent work"
+      instead: "Incremental mapping mode only"
+      reason: "Full scan wastes time on known territory"
+    - condition: "Need an implementation plan, not a context map"
+      instead: "strategic-planner persona or feature-implementation workflow"
+      reason: "Context-mapper produces read-only reconnaissance, not actionable step lists"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
 inputs:
   task:
     type: string
     required: true
     description: The task description to map context for
+
   codebase_path:
     type: string
     required: true
     description: Root path of the codebase to analyze
+    validation:
+      - "MUST be an absolute path (starts with /)"
+      - "MUST be a valid directory"
+
   mapping_mode:
     type: string
     required: false
     enum: [full, incremental, conflict_detection]
     default: full
     description: Depth of context mapping to perform
+
   focus_paths:
     type: array
     items:
@@ -27,6 +63,17 @@ inputs:
     required: false
     description: Specific paths to focus on (for incremental mode)
 
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this context mapping is being performed.
+      Forces the agent to articulate purpose before execution, making
+      logs auditable and reducing hallucinated invocations.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
 outputs:
   context_map:
     type: object
@@ -98,28 +145,278 @@ outputs:
           type: string
     description: Complete context map for downstream agents
 
+  error:
+    type: string
+    description: Error message if mapping failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
 capabilities:
   - name: directory_scan
+    description: >
+      Scan project directory structure and identify layout, entry points, and configs.
+      Use when starting a full mapping of an unfamiliar codebase.
+      Do NOT use when the project structure is already known from recent work.
     risk: low
     consensus: none
-  - name: dependency_analysis
-    risk: low
-    consensus: none
-  - name: convention_detection
-    risk: low
-    consensus: none
-  - name: change_impact_analysis
-    risk: low
-    consensus: none
-  - name: conflict_detection
-    risk: low
-    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      codebase_path:
+        type: string
+        required: true
+      max_depth:
+        type: integer
+        required: false
+        default: 5
+    outputs:
+      structure:
+        type: object
+        description: "Project layout with entry points and config files"
+      file_count:
+        type: integer
+    post_execution:
+      - "Verify all major directories were scanned"
+      - "Confirm entry points and config files identified"
+      - "If file count is very large, narrow scope to change-adjacent areas"
 
+  - name: dependency_analysis
+    description: >
+      Trace internal imports and external package dependencies for files in scope.
+      Use when mapping how files depend on each other before a multi-file change.
+      Do NOT use for isolated single-file changes with no shared imports.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      files_in_scope:
+        type: array
+        items:
+          type: string
+        required: true
+      include_external:
+        type: boolean
+        required: false
+        default: true
+    outputs:
+      internal_deps:
+        type: array
+        description: "Import chains between in-scope files"
+      external_deps:
+        type: array
+        description: "External package dependencies"
+    post_execution:
+      - "Verify dependency chains traced in both directions (upstream and downstream)"
+      - "Flag circular dependencies if detected"
+      - "Confirm external packages match lockfile versions"
+
+  - name: convention_detection
+    description: >
+      Identify naming patterns, architectural patterns, and test patterns used in the codebase.
+      Use when working in an unfamiliar codebase or validating assumptions about project norms.
+      Do NOT use when conventions are already documented in CONTRIBUTING.md or similar.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      codebase_path:
+        type: string
+        required: true
+      sample_files:
+        type: array
+        items:
+          type: string
+        required: false
+    outputs:
+      conventions:
+        type: object
+        description: "Detected naming, architecture, and test patterns with evidence"
+    post_execution:
+      - "Verify each convention is backed by file path and line number evidence"
+      - "Flag inconsistent conventions across the codebase"
+      - "Document any conflicting patterns found"
+
+  - name: change_impact_analysis
+    description: >
+      Analyze which files and modules will be affected by a proposed change.
+      Use when planning a change that may have cascading effects.
+      Do NOT use for purely additive changes (new files with no imports).
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      proposed_changes:
+        type: array
+        items:
+          type: object
+          properties:
+            path:
+              type: string
+            change_type:
+              type: string
+              enum: [create, modify, delete]
+        required: true
+    outputs:
+      affected_files:
+        type: array
+        description: "Files affected by the proposed changes"
+      risk_areas:
+        type: array
+        description: "High-risk areas that need careful attention"
+    post_execution:
+      - "Verify all downstream consumers of modified files are identified"
+      - "Confirm risk areas include shared modules with many consumers"
+      - "If affected file count exceeds 10, flag for explicit reasoning"
+
+  - name: conflict_detection
+    description: >
+      Identify potential conflicts when multiple agents or changes target shared files.
+      Use when coordinating parallel work on overlapping areas of the codebase.
+      Do NOT use for sequential single-agent work with no overlap.
+    risk: low
+    consensus: none
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      change_sets:
+        type: array
+        items:
+          type: object
+          properties:
+            agent:
+              type: string
+            files:
+              type: array
+              items:
+                type: string
+        required: true
+    outputs:
+      conflicts:
+        type: array
+        description: "Shared files and potential merge conflicts"
+      recommended_sequence:
+        type: array
+        description: "Suggested execution order to avoid conflicts"
+    post_execution:
+      - "Verify all shared files between change sets are identified"
+      - "Confirm recommended sequence resolves all detected conflicts"
+      - "Flag any lock contention on shared resources"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Codebase path exists and is readable"
+    - "Task description is specific enough to scope the mapping"
+    - "Mapping mode is appropriate for the task complexity"
+
+  post_conditions:
+    - "All affected files identified with paths and line numbers"
+    - "Dependency chains traced in both directions (upstream and downstream)"
+    - "Project conventions documented with evidence"
+    - "Data flows traced end-to-end"
+    - "Unknowns and ambiguities explicitly surfaced"
+
+  checkpoints:
+    - trigger: "Dependency graph is larger than expected (>10 files affected)"
+      action: "Pause and reason about whether scope should be narrowed"
+    - trigger: "Conventions appear inconsistent across the codebase"
+      action: "Document both patterns, flag for user decision"
+    - trigger: "Multiple viable execution strategies exist"
+      action: "List trade-offs and recommend, but defer final choice to downstream"
+    - trigger: "Proposed change touches a shared module used by many consumers"
+      action: "Map all consumers and flag regression risk"
+    - trigger: "Before finalizing the context map for handoff"
+      action: "Run completion checklist to verify all sections are populated"
+
+  completion_checklist:
+    - "All affected files identified with evidence"
+    - "WHY/WHAT/HOW sections are populated"
+    - "Confidence level assigned with justification"
+    - "Unknowns surfaced — no silent gaps"
+    - "Context map produces valid structured YAML"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: recoverable
+      description: "File not found, path mismatch"
+      action: retry
+      max_retries: 2
+      fallback: "Re-scan directory structure, correct paths"
+
+    - error_class: ambiguity
+      description: "Conflicting conventions, ambiguous patterns"
+      action: report
+      max_retries: 0
+      fallback: "Document both patterns, flag for user decision"
+
+    - error_class: circular_dependency
+      description: "Circular dependencies detected in import graph"
+      action: escalate
+      max_retries: 0
+      fallback: "Map the cycle, escalate to user"
+
+    - error_class: scope_overflow
+      description: "Codebase too large to map fully"
+      action: report
+      max_retries: 0
+      fallback: "Scope down to change-adjacent files, note boundary"
+
+    - error_class: repeated_failure
+      description: "Same error after max_retries"
+      action: stop
+      fallback: "Stop, report what was attempted and what failed"
+
+  self_correction:
+    - "If context map produced without evidence: re-run with file path and line number requirements"
+    - "If dependency analysis was skipped: acknowledge and run before handoff"
+    - "If code was modified during mapping: revert changes, mapping is read-only"
+    - "If intent field was omitted: acknowledge on next turn, provide intent retroactively"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: context_map
+      type: object
+      consumers: [feature-implementation, multi-agent-supervisor, tech-debt-auditor, code-reviewer, senior-software-engineer]
+      description: "Complete WHY/WHAT/HOW context map with project structure, dependencies, conventions, and execution plan"
+
+    - name: dependency_graph
+      type: object
+      consumers: [feature-implementation, multi-agent-supervisor]
+      description: "Internal and external dependency map for files in scope"
+
+    - name: convention_report
+      type: object
+      consumers: [senior-software-engineer, code-reviewer]
+      description: "Detected project conventions and patterns with evidence"
+
+  requires: []
+    # context-mapping is typically the first step — it requires no upstream agent output
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
 constraints:
   read_only: true
   evidence_required: true
   output_format: yaml
+  max_scan_depth: 10
+  max_files_in_scope: 100
 
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
 dependencies:
   agents: []
-  system: ["find", "grep"]
+  system: [find, grep]

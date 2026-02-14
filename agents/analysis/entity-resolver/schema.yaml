@@ -1,0 +1,454 @@
+# entity-resolver schema v2.0.0
+
+name: entity-resolver
+version: "2.0.0"
+description: "Resolves entity ambiguity across document corpora — fuzzy name matching, alias detection, identity consolidation, and confidence-scored entity merging"
+type: agent
+category: analysis
+
+risk_level: medium
+consensus_level: majority
+trust: supervised
+parallel_safe: true
+tools: [Read, Write, Edit, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "After NER extracts entities from a new document batch and duplicates need consolidation"
+    - "Manually merging entities the user has identified as the same real-world entity"
+    - "Finding and reviewing suspected duplicates in an entity database"
+    - "During Convergent intent resolution when agents reference the same entity differently"
+    - "Assessing confidence that two entity mentions refer to the same real-world entity"
+  do_not_use_when:
+    - condition: "Extracting entities from raw text"
+      instead: "NER/entity extraction"
+      reason: "This skill resolves existing mentions, it doesn't find new ones"
+    - condition: "Building relationship graphs between distinct entities"
+      instead: "document-forensics cross-validation"
+      reason: "Resolution is about identity, not relationships"
+    - condition: "Entity list has fewer than 10 entries"
+      instead: "Manual review"
+      reason: "Automated resolution overhead exceeds the cost of human judgment on small lists"
+    - condition: "Entities are already canonicalized with unique IDs"
+      instead: "Skip resolution"
+      reason: "Re-resolving clean data wastes time and risks false merges"
+
+# ─────────────────────────────────────────────
+# Inputs — Skill-level contract
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [resolve_entities, merge_entities, split_entity, find_duplicates]
+    description: The entity resolution operation to perform
+
+  corpus_id:
+    type: string
+    required: false
+    description: Identifier for the document corpus (required for resolve_entities)
+
+  source_id:
+    type: integer
+    required: false
+    description: Entity ID being merged into the target (required for merge_entities)
+
+  target_id:
+    type: integer
+    required: false
+    description: Entity ID that will be the canonical entity (required for merge_entities)
+
+  entity_id:
+    type: integer
+    required: false
+    description: Canonical entity to split (required for split_entity)
+
+  aliases_to_separate:
+    type: array
+    items:
+      type: string
+    required: false
+    description: Aliases that should become a new entity (required for split_entity)
+
+  confidence_threshold:
+    type: number
+    required: false
+    default: 0.85
+    description: Auto-merge threshold (for resolve_entities)
+
+  review_threshold:
+    type: number
+    required: false
+    default: 0.60
+    description: Minimum confidence for review queue (for resolve_entities)
+
+  min_confidence:
+    type: number
+    required: false
+    default: 0.60
+    description: Minimum confidence to report (for find_duplicates)
+
+  entity_type:
+    type: string
+    required: false
+    enum: [person, place, org]
+    description: Filter by entity type (for find_duplicates)
+
+  reason:
+    type: string
+    required: false
+    description: Human-provided justification (required for merge_entities and split_entity)
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this resolution is being performed.
+      Must state which corpus or batch and the expected entity volume or merge evidence.
+
+# ─────────────────────────────────────────────
+# Outputs — Skill-level contract
+# ─────────────────────────────────────────────
+outputs:
+  auto_merged:
+    type: integer
+    description: Count of entity pairs merged automatically
+
+  review_queue:
+    type: array
+    items:
+      type: object
+    description: Entity pairs flagged for human review with confidence scores
+
+  no_match:
+    type: integer
+    description: Count of entities with no viable candidates
+
+  resolution_log:
+    type: array
+    items:
+      type: object
+    description: Audit trail of all decisions
+
+  success:
+    type: boolean
+    description: Whether the operation completed successfully
+
+  canonical_name:
+    type: string
+    description: The name chosen as canonical (for merge_entities)
+
+  aliases_preserved:
+    type: array
+    items:
+      type: string
+    description: All aliases now associated with the target entity
+
+  documents_affected:
+    type: integer
+    description: Count of documents whose entity references were updated
+
+  new_entity_id:
+    type: integer
+    description: ID of the newly created entity (for split_entity)
+
+  new_entity_name:
+    type: string
+    description: Canonical name for the new entity (for split_entity)
+
+  documents_updated:
+    type: integer
+    description: Count of documents whose references were updated (for split_entity)
+
+  duplicates:
+    type: array
+    items:
+      type: object
+    description: Pairs of suspected duplicates with confidence scores and evidence
+
+  count:
+    type: integer
+    description: Number of suspected duplicate pairs found
+
+  error:
+    type: string
+    description: Error message if operation failed
+
+# ─────────────────────────────────────────────
+# Capabilities — Per-operation definitions
+# ─────────────────────────────────────────────
+capabilities:
+  - name: resolve_entities
+    description: >
+      Run the full resolution pipeline on all unresolved entities in the corpus.
+      Use after a new document batch has been ingested and NER has run.
+      Do NOT use on an empty entity table.
+    risk: medium
+    consensus: majority
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      corpus_id:
+        type: string
+        required: true
+        description: "Identifier for the document corpus"
+      confidence_threshold:
+        type: number
+        required: false
+        default: 0.85
+        description: "Auto-merge threshold"
+      review_threshold:
+        type: number
+        required: false
+        default: 0.60
+        description: "Minimum confidence for review queue"
+    outputs:
+      auto_merged:
+        type: integer
+      review_queue:
+        type: array
+      no_match:
+        type: integer
+      resolution_log:
+        type: array
+    post_execution:
+      - "Verify auto-merged count is plausible relative to entity volume"
+      - "Check that review queue items have evidence annotations"
+      - "Confirm resolution log is complete"
+
+  - name: merge_entities
+    description: >
+      Manually merge two entities identified as the same real-world entity.
+      Use when a human reviewer confirms a merge from the review queue.
+      Do NOT use without reviewing the evidence first.
+    risk: medium
+    consensus: any
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      source_id:
+        type: integer
+        required: true
+        description: "Entity ID being merged into the target"
+      target_id:
+        type: integer
+        required: true
+        description: "Entity ID that will be the canonical entity"
+      reason:
+        type: string
+        required: true
+        description: "Human-provided justification for the merge"
+    outputs:
+      success:
+        type: boolean
+      canonical_name:
+        type: string
+      aliases_preserved:
+        type: array
+      documents_affected:
+        type: integer
+    post_execution:
+      - "Verify the source entity is now marked as resolved_to the target"
+      - "Confirm all aliases from the source are preserved on the target"
+      - "Check the resolution log entry exists"
+
+  - name: split_entity
+    description: >
+      Reverse a previous merge when new evidence shows two mentions are distinct entities.
+      Use when a merge is discovered to be incorrect.
+      Do NOT use without evidence that the original merge was wrong.
+    risk: high
+    consensus: majority
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      entity_id:
+        type: integer
+        required: true
+        description: "The canonical entity to split"
+      aliases_to_separate:
+        type: array
+        required: true
+        description: "Which aliases should become a new entity"
+      reason:
+        type: string
+        required: true
+        description: "Evidence contradicting the original merge"
+    outputs:
+      new_entity_id:
+        type: integer
+      new_entity_name:
+        type: string
+      documents_updated:
+        type: integer
+    post_execution:
+      - "Verify the new entity has the correct aliases"
+      - "Confirm document references were updated"
+      - "Check the resolution log records both the split and the original merge it reverses"
+
+  - name: find_duplicates
+    description: >
+      Scan the entity database for suspected duplicates above a confidence threshold.
+      Use for periodic maintenance or before releasing analysis results.
+      Do NOT use immediately after a full resolve_entities run — duplicates were already addressed.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      min_confidence:
+        type: number
+        required: false
+        default: 0.60
+        description: "Minimum confidence to report"
+      entity_type:
+        type: string
+        required: false
+        enum: [person, place, org]
+        description: "Filter by entity type"
+    outputs:
+      duplicates:
+        type: array
+      count:
+        type: integer
+    post_execution:
+      - "Verify results are sorted by confidence (highest first)"
+      - "Check that evidence annotations explain why each pair is suspected"
+      - "Confirm no already-resolved pairs appear in results"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Entity database exists and is accessible"
+    - "For resolve_entities, unresolved entities exist in the corpus"
+    - "For merge_entities, both source and target entities exist"
+    - "For split_entity, the entity has aliases that can be separated"
+
+  post_conditions:
+    - "All auto-merges are at or above the confidence threshold"
+    - "Review queue contains all uncertain pairs with evidence"
+    - "Resolution log has an entry for every merge and split"
+    - "No cross-type merges occurred without explicit override"
+
+  checkpoints:
+    - trigger: "Auto-merge count exceeds 30% of total entities"
+      action: "Verify threshold is not too low or normalization is not too aggressive"
+    - trigger: "A single entity absorbs more than 10 aliases"
+      action: "Verify these are genuinely the same entity, not a normalization bug"
+    - trigger: "Cross-type merge is requested"
+      action: "Require explicit evidence and user confirmation"
+    - trigger: "Resolution produces zero review queue items"
+      action: "Verify this is expected — suspicious unless the corpus is very clean"
+    - trigger: "Before finalizing"
+      action: "Verify the entity graph is still navigable and no orphaned references exist"
+
+  completion_checklist:
+    - "All unresolved entities were processed through the pipeline"
+    - "Auto-merges are at or above the confidence threshold (default 0.85)"
+    - "Review queue contains all uncertain pairs (0.60-0.85) with evidence"
+    - "Resolution log has an entry for every merge and split"
+    - "No cross-type merges occurred without explicit override"
+    - "Aliases from merged entities are preserved on the canonical entity"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: schema_missing
+      description: "Database schema missing resolution tables"
+      action: retry
+      max_retries: 1
+      fallback: "Create tables, retry"
+
+    - error_class: normalization_empty
+      description: "Normalization produces empty string"
+      action: skip
+      max_retries: 0
+      fallback: "Log original, skip this mention, continue"
+
+    - error_class: candidate_overflow
+      description: "Candidate generation returns >100 matches"
+      action: retry
+      max_retries: 1
+      fallback: "Raise threshold, re-run for this entity"
+
+    - error_class: circular_merge
+      description: "Circular merge detected (A to B to A)"
+      action: stop
+      max_retries: 0
+      fallback: "Halt, report the cycle, do not merge"
+
+    - error_class: write_conflict
+      description: "Database write conflict"
+      action: retry
+      max_retries: 3
+      fallback: "Retry after brief wait"
+
+    - error_class: repeated_failure
+      description: "Same entity fails resolution 3 times"
+      action: stop
+      fallback: "Skip, add to error log, continue with others"
+
+  self_correction:
+    - "Auto-merged below threshold: flag the merge for human review retroactively, do not reverse automatically"
+    - "Audit trail entry missing: reconstruct from database state, log the gap"
+    - "Aliases deleted during merge: attempt recovery from resolution_log, alert user"
+    - "Cross-type merge performed without override: flag for human review, add prominent warning to entity record"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: resolved_entities
+      type: array
+      consumers: [document-forensics, intent-author, multi-agent-supervisor]
+      description: "Canonicalized entity list with aliases and confidence scores"
+
+    - name: review_queue
+      type: array
+      consumers: [multi-agent-supervisor]
+      description: "Uncertain entity pairs flagged for human review"
+
+    - name: resolution_log
+      type: array
+      consumers: [multi-agent-supervisor, document-forensics]
+      description: "Audit trail of all merge/split decisions"
+
+  requires:
+    - name: context_map
+      type: object
+      provider: context-mapper
+      description: "Corpus map with entity preview for resolution scoping"
+
+    - name: domain_vocabulary
+      type: object
+      provider: context-mapper
+      description: "Project-specific terms to avoid false matches on domain jargon"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  auto_merge_threshold: 0.85
+  review_threshold: 0.60
+  always_preserve_aliases: true
+  audit_trail_required: true
+  reversible_merges: true
+  ocr_aware: true
+  type_safe_merges: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: [sqlite3, json, difflib, re]
+  system: []
+  skills: [context-mapper]
+  config: []
