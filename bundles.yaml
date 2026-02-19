@@ -56,3 +56,41 @@ bundles:
       - personas/claude-code/mcp-server-builder
       - personas/claude-code/cicd-pipeline
       - personas/claude-code/session-memory-manager
+
+  website-builder:
+    description: Full website lifecycle — design, build, deploy, optimize, and secure
+    audience: Developers building and shipping production websites
+    skills:
+      - personas/web/web-frontend-builder
+      - personas/web/web-backend-builder
+      - personas/web/web-deployer
+      - personas/web/web-designer
+      - personas/web/web-seo-optimizer
+      - personas/web/web-analytics
+      - personas/web/web-performance
+      - personas/web/web-security-hardener
+    hooks:
+      - hooks/tdd-guard.sh
+      - hooks/no-force-push.sh
+
+  website-ecommerce:
+    description: E-commerce website development — storefronts, payments, content, and SEO
+    audience: Developers building online stores and e-commerce platforms
+    skills:
+      - personas/web/web-frontend-builder
+      - personas/web/web-merchant
+      - personas/web/web-content-writer
+      - personas/web/web-seo-optimizer
+      - personas/web/web-deployer
+    hooks:
+      - hooks/tdd-guard.sh
+
+  website-content:
+    description: Content-driven websites — CMS setup, writing, SEO, and analytics
+    audience: Developers building blogs, marketing sites, and content platforms
+    skills:
+      - personas/web/web-cms-manager
+      - personas/web/web-content-writer
+      - personas/web/web-seo-optimizer
+      - personas/web/web-analytics
+      - personas/web/web-designer

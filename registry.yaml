@@ -164,6 +164,51 @@ personas:
       description: Apple platform development best practices (Swift, SwiftUI, Xcode)
       has_references: true
 
+  web:
+    - name: web-frontend-builder
+      path: personas/web/web-frontend-builder
+      description: Production-grade frontend with React, Next.js, or static HTML/CSS
+
+    - name: web-backend-builder
+      path: personas/web/web-backend-builder
+      description: Backend APIs with FastAPI, Flask, Express, or Next.js API routes
+
+    - name: web-designer
+      path: personas/web/web-designer
+      description: Website visual design, color systems, typography, and design tokens
+
+    - name: web-deployer
+      path: personas/web/web-deployer
+      description: Deploy websites to Vercel, Fly.io, Netlify, Cloudflare, or VPS
+
+    - name: web-seo-optimizer
+      path: personas/web/web-seo-optimizer
+      description: Technical SEO, structured data, Core Web Vitals, and crawlability
+
+    - name: web-analytics
+      path: personas/web/web-analytics
+      description: GA4 setup, event tracking, conversion funnels, and Search Console
+
+    - name: web-content-writer
+      path: personas/web/web-content-writer
+      description: Website copy, blog posts, landing pages, and email content
+
+    - name: web-merchant
+      path: personas/web/web-merchant
+      description: E-commerce with Stripe, product catalogs, carts, and Shopify
+
+    - name: web-cms-manager
+      path: personas/web/web-cms-manager
+      description: WordPress, Ghost, and headless CMS integration and content modeling
+
+    - name: web-performance
+      path: personas/web/web-performance
+      description: Core Web Vitals, bundle analysis, caching, and Lighthouse optimization
+
+    - name: web-security-hardener
+      path: personas/web/web-security-hardener
+      description: Security headers, CSP, input validation, and OWASP Top 10 hardening
+
 # ─────────────────────────────────────────────
 # Agents — Gorgon agent capabilities (what agents can do)
 # ─────────────────────────────────────────────
@@ -315,10 +360,10 @@ workflows:
 # Summary Statistics
 # ─────────────────────────────────────────────
 stats:
-  total_personas: 36
+  total_personas: 47
   total_agents: 16
   total_workflows: 3
-  total_skills: 55
+  total_skills: 66
   categories:
     persona:
       engineering: 7
@@ -327,6 +372,7 @@ stats:
       claude-code: 5
       security: 2
       domain: 12
+      web: 11
     agent:
       system: 2
       browser: 2

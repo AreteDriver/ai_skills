@@ -3,7 +3,7 @@
 [![Validate Skills](https://github.com/AreteDriver/ai-skills/actions/workflows/validate-skills.yml/badge.svg)](https://github.com/AreteDriver/ai-skills/actions/workflows/validate-skills.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude-Code-blueviolet)](https://claude.ai/code)
-[![Skills](https://img.shields.io/badge/Skills-55-blue)]()
+[![Skills](https://img.shields.io/badge/Skills-66-blue)]()
 
 **Production-ready skills for Claude Code personas, Gorgon agent capabilities, and orchestrated workflows.**
 
@@ -48,7 +48,7 @@ See the full [Quickstart Guide](examples/quickstart/README.md) with before/after
 │  (how Claude    │ (what Gorgon  │ (multi-step   │
 │   behaves)      │  agents do)   │  execution)   │
 ├─────────────────┼───────────────┼───────────────┤
-│ 36 skills       │ 16 skills     │ 3 workflows   │
+│ 47 skills       │ 16 skills     │ 3 workflows   │
 │ SKILL.md only   │ SKILL.md +    │ SKILL.md +    │
 │                 │ schema.yaml   │ schema.yaml   │
 └─────────────────┴───────────────┴───────────────┘
@@ -121,6 +121,22 @@ See the full [Quickstart Guide](examples/quickstart/README.md) with before/after
 | [hauling-quote-generator](personas/domain/hauling-quote-generator/SKILL.md) | Quote generation | `personas/domain/` |
 | [tie-dye-business-coach](personas/domain/tie-dye-business-coach/SKILL.md) | Tie-dye business coaching | `personas/domain/` |
 | [apple-dev-best-practices](personas/domain/apple-dev-best-practices/SKILL.md) | Apple platform dev (Swift, SwiftUI) | `personas/domain/` |
+
+### Web (11)
+
+| Skill | Purpose | Path |
+|-------|---------|------|
+| [web-frontend-builder](personas/web/web-frontend-builder/SKILL.md) | React/Next.js/static frontend | `personas/web/` |
+| [web-backend-builder](personas/web/web-backend-builder/SKILL.md) | API backends (FastAPI/Express) | `personas/web/` |
+| [web-designer](personas/web/web-designer/SKILL.md) | Visual design and design systems | `personas/web/` |
+| [web-deployer](personas/web/web-deployer/SKILL.md) | Deployment and hosting | `personas/web/` |
+| [web-seo-optimizer](personas/web/web-seo-optimizer/SKILL.md) | Search engine optimization | `personas/web/` |
+| [web-analytics](personas/web/web-analytics/SKILL.md) | Traffic analytics and tracking | `personas/web/` |
+| [web-content-writer](personas/web/web-content-writer/SKILL.md) | Copy, blog posts, email | `personas/web/` |
+| [web-merchant](personas/web/web-merchant/SKILL.md) | E-commerce and payments | `personas/web/` |
+| [web-cms-manager](personas/web/web-cms-manager/SKILL.md) | WordPress, Ghost, headless CMS | `personas/web/` |
+| [web-performance](personas/web/web-performance/SKILL.md) | Speed and Core Web Vitals | `personas/web/` |
+| [web-security-hardener](personas/web/web-security-hardener/SKILL.md) | Security headers and hardening | `personas/web/` |
 
 ## Agents — Gorgon Capabilities
 
@@ -224,6 +240,9 @@ Curated skill collections for common use cases. Install with `./tools/install.sh
 | `data-pipeline` | data-engineer, data-analyst, data-visualizer, report-generator | End-to-end data engineering |
 | `full-stack-dev` | senior-software-engineer, code-reviewer, testing-specialist, software-architect, documentation-writer | Full engineering stack |
 | `claude-code-dev` | hooks-designer, plugin-builder, mcp-server-builder, cicd-pipeline, session-memory-manager | Building Claude Code extensions |
+| `website-builder` | web-frontend-builder, web-backend-builder, web-deployer, web-designer, web-seo-optimizer, web-analytics, web-performance, web-security-hardener | Full website lifecycle |
+| `website-ecommerce` | web-frontend-builder, web-merchant, web-content-writer, web-seo-optimizer, web-deployer | E-commerce development |
+| `website-content` | web-cms-manager, web-content-writer, web-seo-optimizer, web-analytics, web-designer | Content-driven sites |
 
 Bundle definitions live in `bundles.yaml`. Add your own by following the same format.
 
