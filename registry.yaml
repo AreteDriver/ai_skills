@@ -111,6 +111,10 @@ personas:
       path: personas/claude-code/session-manager
       description: Cross-session continuity with start, resume, sync, and complete lifecycle
 
+    - name: security-hooks
+      path: personas/claude-code/security-hooks
+      description: Claude Code security hooks — 7 protective PreToolUse guards for sensitive files, dangerous commands, and system paths
+
   security:
     - name: security-auditor
       path: personas/security/security-auditor
@@ -429,16 +433,16 @@ workflows:
 # Summary Statistics
 # ─────────────────────────────────────────────
 stats:
-  total_personas: 58
+  total_personas: 59
   total_agents: 17
   total_workflows: 6
-  total_skills: 81
+  total_skills: 82
   categories:
     persona:
       engineering: 8
       data: 4
       devops: 6
-      claude-code: 6
+      claude-code: 7
       security: 2
       domain: 12
       api: 4
