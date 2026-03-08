@@ -121,6 +121,22 @@ skip_promotion: true
 
 - Enable "Allow auto-merge" in Settings → General
 - Branch protection on target and production branches recommended
+- **Org-level**: Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests" (org setting overrides repo)
+- **Repo-level**: Same setting under repo Settings → Actions → General
+
+## Known Gotchas (Battle-Tested)
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Missing `id-token: write` | `is_error: true`, `total_cost_usd: 0`, `duration_ms: ~160` | Add `id-token: write` to job permissions |
+| Git auth after claude-code-action | Push fails with "Invalid username or token" | Re-set remote URL with `GITHUB_TOKEN` before push step |
+| Agent doesn't commit | "No commits between main and branch" | Add explicit commit instructions in prompt + `git config user.name/email` |
+| Agent modifies workflow files | Push rejected — "refusing to allow...without workflows permission" | Add "Do NOT modify .github/workflows/" to prompt |
+| Tool permission denials | `permission_denials_count > 0`, no file changes | Use `claude_args: "--allowedTools Bash Read Write Edit Glob Grep"` |
+| GitHub throttles label toggles | No new workflow run after re-labeling | Add `workflow_dispatch` trigger as fallback, use `gh workflow run` |
+| `workflows: write` in YAML | Workflow fails to parse | Not a valid job-level permission — protect via instructions instead |
+| PR creation blocked | "GitHub Actions is not permitted to create or approve pull requests" | Enable at **org level**, not just repo level |
+| Stale branch from prior run | Push fails — branch already exists | Add cleanup step: `git push origin --delete "$BRANCH" 2>/dev/null \|\| true` |
 
 ## agent_context Best Practices
 
