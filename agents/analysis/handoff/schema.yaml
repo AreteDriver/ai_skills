@@ -1,0 +1,250 @@
+# handoff schema v1.0.0
+
+name: handoff
+version: "1.0.0"
+description: "Packages project state into structured context documents for agent sessions, human pickup, or Quorum IntentNodes"
+type: agent
+category: analysis
+
+risk_level: low
+consensus_level: any
+trust: autonomous
+parallel_safe: true
+tools: [Read, Glob, Grep, Bash]
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Ending a work session and another session will continue the work"
+    - "Switching between projects and need to capture current state"
+    - "Handing off work to another developer or AI agent"
+    - "Creating a checkpoint before a risky operation"
+    - "Packaging context for an agent-pipeline automated run"
+  do_not_use_when:
+    - condition: "Writing persistent project documentation"
+      instead: "documentation-writer"
+      reason: "Handoffs are ephemeral session state, not permanent docs"
+    - condition: "Managing long-term memory across many sessions"
+      instead: "session-memory-manager"
+      reason: "It handles memory lifecycle, not single-session snapshots"
+    - condition: "Creating git commits or changelogs"
+      instead: "release-engineer"
+      reason: "Handoffs describe state, not changes"
+
+# ─────────────────────────────────────────────
+# Inputs
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [create_handoff, list_handoffs, update_handoff]
+    description: The handoff operation to perform
+
+  audience:
+    type: string
+    required: false
+    enum: [agent, human, quorum]
+    default: agent
+    description: "Target audience determines output format (default: agent)"
+
+  project_path:
+    type: string
+    required: false
+    description: "Path to the project root (default: current directory)"
+
+  slug:
+    type: string
+    required: false
+    description: "Handoff identifier for update/view operations"
+
+  intent:
+    type: string
+    required: true
+    description: >
+      One-sentence explanation of WHY this handoff is being created.
+      Must state who is picking up the work and what work is being handed off.
+
+# ─────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────
+outputs:
+  handoff_path:
+    type: string
+    description: "Path to the generated handoff document"
+
+  handoff_content:
+    type: string
+    description: "The handoff document content"
+
+  handoffs:
+    type: array
+    items:
+      type: object
+    description: "List of existing handoff documents (for list_handoffs)"
+
+  error:
+    type: string
+    description: "Error message if operation failed"
+
+# ─────────────────────────────────────────────
+# Capabilities
+# ─────────────────────────────────────────────
+capabilities:
+  - name: create_handoff
+    description: >
+      Package current project state into a structured handoff document.
+      Reads git state, plan files, CLAUDE.md, and recent history.
+      Output format adapts to the target audience.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: true
+    inputs:
+      audience:
+        type: string
+        required: false
+        enum: [agent, human, quorum]
+        default: agent
+      project_path:
+        type: string
+        required: false
+    outputs:
+      handoff_path:
+        type: string
+      handoff_content:
+        type: string
+    post_execution:
+      - "Verify 'Immediate Next Action' is specific enough to execute"
+      - "Verify no secrets or credentials appear in the handoff"
+      - "Verify git status was checked"
+
+  - name: list_handoffs
+    description: >
+      List existing handoff documents in the project's .claude/handoffs/ directory.
+    risk: low
+    consensus: any
+    parallel_safe: true
+    intent_required: false
+    outputs:
+      handoffs:
+        type: array
+
+  - name: update_handoff
+    description: >
+      Update an existing handoff document with new state.
+      Use when additional context needs to be captured before the session ends.
+    risk: low
+    consensus: any
+    parallel_safe: false
+    intent_required: true
+    inputs:
+      slug:
+        type: string
+        required: true
+        description: "Identifier of the handoff to update"
+    outputs:
+      handoff_path:
+        type: string
+      handoff_content:
+        type: string
+    post_execution:
+      - "Verify the update preserved existing sections"
+      - "Verify timestamp was updated"
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Project path exists and is accessible"
+    - "For update_handoff, the target handoff document exists"
+
+  post_conditions:
+    - "Git status was checked and documented"
+    - "Immediate Next Action is specific and actionable"
+    - "No secrets or credentials in the handoff"
+    - "Timestamp is present"
+
+  checkpoints:
+    - trigger: "Uncommitted changes detected"
+      action: "List all uncommitted files in the handoff with change descriptions"
+    - trigger: "No CLAUDE.md found"
+      action: "Note absence — important context missing for next session"
+    - trigger: "Handoff exceeds 500 lines"
+      action: "Trim detail — include only file paths and summaries, not content"
+
+  completion_checklist:
+    - "Git status checked and uncommitted changes documented"
+    - "Recent commit history reviewed"
+    - "Plan files checked (.claude/plans/)"
+    - "Immediate Next Action is specific enough to execute without re-reading code"
+    - "No secrets or credentials in handoff"
+    - "Target audience matches output format"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: not_git_repo
+      description: "Project is not a git repository"
+      action: continue
+      fallback: "Skip git sections, note in handoff"
+
+    - error_class: no_plans
+      description: "No .claude/plans/ directory found"
+      action: continue
+      fallback: "Skip plans section"
+
+    - error_class: no_claude_md
+      description: "No CLAUDE.md found"
+      action: continue
+      fallback: "Note absence in handoff"
+
+    - error_class: write_failure
+      description: "Cannot write handoff file to .claude/handoffs/"
+      action: report
+      fallback: "Output handoff to stdout instead"
+
+# ─────────────────────────────────────────────
+# Inter-Agent Contracts
+# ─────────────────────────────────────────────
+contracts:
+  provides:
+    - name: handoff_document
+      type: string
+      consumers: [multi-agent-supervisor, agent-teams-orchestrator]
+      description: "Structured session state document for the next agent or human session"
+
+    - name: quorum_intent_node
+      type: object
+      consumers: [intent-author]
+      description: "Handoff in Quorum IntentNode format for inter-agent coordination"
+
+  requires:
+    - name: file_system_access
+      type: capability
+      provider: file-operations
+      description: "Read access to project files, git state, and plan files"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  max_handoff_lines: 500
+  no_file_contents: true
+  mandatory_next_action: true
+  storage_directory: ".claude/handoffs/"
+  no_secrets: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: []
+  system: [git]
+  skills: []
+  config: []

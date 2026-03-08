@@ -95,6 +95,15 @@ bundles:
       - personas/web/web-analytics
       - personas/web/web-designer
 
+  content-ops:
+    description: Content pipeline — scoring, scrubbing, writing, SEO, and publishing readiness
+    audience: Content creators and marketing teams shipping AI-assisted content
+    skills:
+      - personas/engineering/composite-scorer
+      - personas/web/content-scrubber
+      - personas/web/web-content-writer
+      - personas/web/web-seo-optimizer
+
   api-integration:
     description: API development lifecycle — testing, databases, webhooks, and authentication
     audience: Backend developers building and integrating APIs

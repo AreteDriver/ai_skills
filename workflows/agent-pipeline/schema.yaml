@@ -1,0 +1,231 @@
+# agent-pipeline schema v1.0.0
+
+name: agent-pipeline
+version: "1.0.0"
+description: "Automated Issue-to-PR-to-Merge pipeline using GitHub Actions and AI agents with review loops"
+type: workflow
+category: automation
+
+risk_level: medium
+
+# ─────────────────────────────────────────────
+# Routing
+# ─────────────────────────────────────────────
+routing:
+  use_when:
+    - "Setting up automated agent implementation in a GitHub repository"
+    - "Configuring Issue → PR → Review → Merge automation"
+    - "Adding AI agent CI/CD to a repo with tests and CLAUDE.md"
+  do_not_use_when:
+    - condition: "Repository has no tests or CI"
+      instead: "Set up tests first"
+      reason: "The pipeline depends on test gates to validate agent output"
+    - condition: "Issues are vague or lack acceptance criteria"
+      instead: "Write better issue templates first"
+      reason: "Agents need specific requirements to produce useful implementations"
+    - condition: "Security-critical changes"
+      instead: "Human implementation"
+      reason: "Auth, crypto, and secrets handling needs human authorship"
+
+# ─────────────────────────────────────────────
+# Inputs
+# ─────────────────────────────────────────────
+inputs:
+  operation:
+    type: string
+    required: true
+    enum: [setup, configure, validate]
+    description: "Pipeline operation to perform"
+
+  repo_path:
+    type: string
+    required: true
+    description: "Path to the target repository"
+
+  agent:
+    type: string
+    required: false
+    enum: [claude, codex]
+    default: claude
+    description: "AI agent to use for implementation"
+
+  target_branch:
+    type: string
+    required: false
+    default: develop
+    description: "Branch where agent PRs are merged"
+
+  production_branch:
+    type: string
+    required: false
+    default: main
+    description: "Branch for promotion PRs"
+
+  trigger_label:
+    type: string
+    required: false
+    default: agent
+    description: "Issue label that triggers the pipeline"
+
+  max_review_iterations:
+    type: integer
+    required: false
+    default: 3
+    description: "Maximum review fix cycles before human escalation"
+
+  agent_timeout:
+    type: integer
+    required: false
+    default: 30
+    description: "Minutes per agent run"
+
+  skip_promotion:
+    type: boolean
+    required: false
+    default: false
+    description: "Skip promotion PR (for single-branch repos)"
+
+  agent_context:
+    type: string
+    required: false
+    description: "Additional context injected into every agent run"
+
+  intent:
+    type: string
+    required: true
+    description: "Why this pipeline is being set up and for which repository"
+
+# ─────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────
+outputs:
+  config_path:
+    type: string
+    description: "Path to generated agent-pipeline.yml"
+
+  workflow_paths:
+    type: array
+    items:
+      type: string
+    description: "Paths to generated workflow files"
+
+  validation_result:
+    type: object
+    description: "Validation results for existing pipeline config"
+
+  error:
+    type: string
+    description: "Error message if operation failed"
+
+# ─────────────────────────────────────────────
+# Phases
+# ─────────────────────────────────────────────
+phases:
+  - name: validate_prerequisites
+    description: "Check repo has CI, tests, CLAUDE.md, and required settings"
+    inputs: [repo_path]
+    outputs:
+      - has_ci: boolean
+      - has_tests: boolean
+      - has_claude_md: boolean
+      - has_auto_merge: boolean
+      - issues: array
+
+  - name: generate_config
+    description: "Create .github/agent-pipeline.yml from inputs"
+    inputs: [agent, target_branch, production_branch, trigger_label, max_review_iterations, agent_timeout, skip_promotion, agent_context]
+    outputs:
+      - config_path: string
+      - config_content: string
+
+  - name: install_workflows
+    description: "Copy 4 workflow files to .github/workflows/"
+    inputs: [repo_path]
+    outputs:
+      - workflow_paths: array
+
+  - name: configure_secrets
+    description: "Guide user through setting up required secrets"
+    inputs: [agent]
+    outputs:
+      - secrets_configured: boolean
+
+  - name: verify_pipeline
+    description: "Create test issue, label it, verify pipeline fires"
+    inputs: [repo_path, trigger_label]
+    outputs:
+      - test_issue_url: string
+      - pipeline_status: string
+
+# ─────────────────────────────────────────────
+# Verification
+# ─────────────────────────────────────────────
+verification:
+  pre_conditions:
+    - "Repository exists and is accessible"
+    - "User has admin access to configure secrets and settings"
+    - "Repository has at least one test suite"
+
+  post_conditions:
+    - "agent-pipeline.yml exists in .github/"
+    - "4 workflow files exist in .github/workflows/"
+    - "Required secrets are configured"
+    - "Auto-merge is enabled"
+    - "Trigger label exists"
+
+  completion_checklist:
+    - "Repository has CI that runs on PRs"
+    - "CLAUDE.md exists with project conventions"
+    - ".github/agent-pipeline.yml config created"
+    - "4 workflow files in .github/workflows/"
+    - "Required secrets configured"
+    - "Allow auto-merge enabled"
+    - "Trigger label created"
+    - "Branch protection configured"
+    - "Test issue verified pipeline fires"
+
+# ─────────────────────────────────────────────
+# Error Handling
+# ─────────────────────────────────────────────
+error_handling:
+  escalation:
+    - error_class: no_ci
+      description: "Repository has no CI pipeline"
+      action: report
+      fallback: "Cannot set up agent-pipeline without CI — set up tests first"
+
+    - error_class: no_claude_md
+      description: "No CLAUDE.md found"
+      action: warn
+      fallback: "Pipeline will work but agent output quality will be lower without conventions"
+
+    - error_class: no_admin_access
+      description: "User cannot configure secrets or repo settings"
+      action: report
+      fallback: "Provide instructions for admin to complete setup"
+
+    - error_class: workflow_exists
+      description: "Workflow files already exist"
+      action: confirm
+      fallback: "Ask user before overwriting existing workflows"
+
+# ─────────────────────────────────────────────
+# Constraints
+# ─────────────────────────────────────────────
+constraints:
+  reviewer_agnostic: true
+  agent_agnostic: true
+  all_changes_via_pr: true
+  time_boxed_agent_runs: true
+  human_escape_hatch: true
+
+# ─────────────────────────────────────────────
+# Dependencies
+# ─────────────────────────────────────────────
+dependencies:
+  python: []
+  system: [git, gh]
+  skills: []
+  config:
+    - "ANTHROPIC_API_KEY (for claude agent)"
+    - "OPENAI_API_KEY (for codex agent, optional)"

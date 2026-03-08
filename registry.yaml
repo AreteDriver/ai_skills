@@ -39,6 +39,11 @@ personas:
       path: personas/engineering/documentation-writer
       description: Technical documentation and API reference writing
 
+    - name: composite-scorer
+      path: personas/engineering/composite-scorer
+      description: Weighted 0-100 composite scoring with category breakdowns and priority actions
+      has_references: true
+
   data:
     - name: data-analyst
       path: personas/data/data-analyst
@@ -226,6 +231,10 @@ personas:
       path: personas/web/web-security-hardener
       description: Security headers, CSP, input validation, and OWASP Top 10 hardening
 
+    - name: content-scrubber
+      path: personas/web/content-scrubber
+      description: Detects and removes AI-generated patterns from content
+
 # ─────────────────────────────────────────────
 # Agents — Gorgon agent capabilities (what agents can do)
 # ─────────────────────────────────────────────
@@ -351,6 +360,13 @@ agents:
       risk_level: low
       consensus: none
 
+    - name: handoff
+      path: agents/analysis/handoff
+      description: Packages project state into structured context documents for agent or human pickup
+      has_schema: true
+      risk_level: low
+      consensus: none
+
 # ─────────────────────────────────────────────
 # Workflows — Multi-step execution templates
 # ─────────────────────────────────────────────
@@ -373,29 +389,35 @@ workflows:
     has_schema: true
     phase: full-lifecycle
 
+  - name: agent-pipeline
+    path: workflows/agent-pipeline
+    description: Automated Issue-to-PR-to-Merge pipeline with AI agents and review loops
+    has_schema: true
+    phase: full-lifecycle
+
 # ─────────────────────────────────────────────
 # Summary Statistics
 # ─────────────────────────────────────────────
 stats:
-  total_personas: 51
-  total_agents: 16
-  total_workflows: 3
-  total_skills: 70
+  total_personas: 53
+  total_agents: 17
+  total_workflows: 4
+  total_skills: 74
   categories:
     persona:
-      engineering: 7
+      engineering: 8
       data: 4
       devops: 6
       claude-code: 5
       security: 2
       domain: 12
       api: 4
-      web: 11
+      web: 12
     agent:
       system: 2
       browser: 2
       email: 1
       integrations: 2
       orchestration: 2
-      analysis: 7
-    workflow: 3
+      analysis: 8
+    workflow: 4
