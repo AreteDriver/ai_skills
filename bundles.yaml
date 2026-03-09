@@ -129,3 +129,12 @@ bundles:
       - personas/api/oauth-integrator
     hooks:
       - hooks/tdd-guard.sh
+
+  eve-frontier:
+    description: EVE Frontier development — World API, on-chain contracts, data pipelines
+    audience: Developers building tools and applications for EVE Frontier
+    skills:
+      - personas/domain/eve-frontier-api
+      - personas/domain/eve-frontier-chain
+      - personas/domain/eve-frontier-data
+      - personas/domain/eve-esi

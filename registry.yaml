@@ -133,6 +133,18 @@ personas:
       path: personas/domain/eve-esi
       description: EVE Online ESI API integration specialist
 
+    - name: eve-frontier-api
+      path: personas/domain/eve-frontier-api
+      description: EVE Frontier World API integration, auth, pagination, and data normalization
+
+    - name: eve-frontier-chain
+      path: personas/domain/eve-frontier-chain
+      description: EVE Frontier on-chain patterns — MUD v2 contracts, Sui SDK, reputation systems
+
+    - name: eve-frontier-data
+      path: personas/domain/eve-frontier-data
+      description: EVE Frontier data pipelines — killmail ingestion, entity tracking, polling architecture
+
     - name: gamedev
       path: personas/domain/gamedev
       description: Game development patterns and engine integration
